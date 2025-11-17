@@ -5,11 +5,11 @@ from typing import Optional
 
 # Import models
 from energysim.core.models.battery_model import (
-    AbstractBatteryModel, SimpleBatteryModel, 
+    AbstractBatteryModel, SimpleBatteryModel,
     DegradationBatteryModel, PassthroughBatteryModel
 )
 from energysim.core.models.thermal_model import (
-    AbstractThermalModel, ThermalModel_1R1C, 
+    AbstractThermalModel, ThermalModel_1R1C,
     ThermalModel_2R2C, PassthroughThermalModel
 )
 from energysim.core.models.heat_pump_model import AbstractHeatPumpModel, PassthroughHeatPumpModel, RampingHeatPumpModel, StatelessHeatPumpModel
@@ -17,11 +17,17 @@ from energysim.core.models.air_conditioner_model import AbstractAirConditionerMo
 from energysim.core.models.thermal_storage_model import (
     AbstractThermalStorage, ThermalStorageModel, ThermalStoragePassthrough
 )
+# --- NEW SOLAR IMPORTS ---
+from energysim.core.models.solar_model import (
+    AbstractSolarModel, SimpleSolarModel, PassthroughSolarModel
+)
+
 
 # Import configs and dummies
 from energysim.core.shared.data_structs import (
-    BatteryConfig, ThermalConfig, HeatPumpConfig, 
-    AirConditionerConfig, ThermalStorageConfig
+    BatteryConfig, ThermalConfig, HeatPumpConfig,
+    AirConditionerConfig, ThermalStorageConfig,
+    SolarConfig # <-- NEW
 )
 
 # --- DUMMY CONFIGS for other optional components ---
@@ -34,6 +40,9 @@ DUMMY_STORAGE_CONFIG = ThermalStorageConfig(
 DUMMY_BATTERY_CONFIG = BatteryConfig(capacity_kwh=0.0, max_power_kw=0.0, efficiency=1.0)
 DUMMY_HP_CONFIG = HeatPumpConfig(max_electrical_power_w=0.0, cop_heating=1.0)
 DUMMY_AC_CONFIG = AirConditionerConfig(max_electrical_power_w=0.0, cop_cooling=1.0)
+# --- NEW SOLAR DUMMY ---
+DUMMY_SOLAR_CONFIG = SolarConfig(model_type="passthrough", panel_area_m2=0.0)
+
 
 # --- Factory Functions ---
 
@@ -84,9 +93,9 @@ def create_storage(config: Optional[ThermalStorageConfig]) -> AbstractThermalSto
 def create_thermal(config: ThermalConfig) -> AbstractThermalModel:
     """Factory function for thermal models."""
     # The room itself is not optional, so we always get a config
-    
+
     initial_temp = config.setpoint # Start at setpoint
-    
+
     if config.model_type == "1R1C":
         return ThermalModel_1R1C(config, initial_temp=initial_temp)
     elif config.model_type == "2R2C":
@@ -95,3 +104,18 @@ def create_thermal(config: ThermalConfig) -> AbstractThermalModel:
         return PassthroughThermalModel(config, initial_temp=initial_temp)
     else:
         raise ValueError(f"Unknown thermal model_type: {config.model_type}")
+
+def create_solar(config: Optional[SolarConfig]) -> AbstractSolarModel:
+    """Factory function for solar PV models."""
+    if config:
+        if config.model_type == "simple":
+            return SimpleSolarModel(config)
+        elif config.model_type == "passthrough":
+            return PassthroughSolarModel(config)
+        else:
+            raise ValueError(f"Unknown solar model_type: {config.model_type}")
+    else:
+        # If no solar config is given, return a passthrough model
+        # with a dummy config. This model will just return 0.0
+        # (since the irradiance field will be 0.0 by default).
+        return PassthroughSolarModel(DUMMY_SOLAR_CONFIG)

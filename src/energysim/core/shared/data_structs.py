@@ -19,7 +19,7 @@ class ThermalConfig:
     # --- Shared Parameters ---
     setpoint: float = 21.0           # °C
     comfort_band: float = 1.0        # °C
-    
+
     # --- 1R1C Model Parameters (Existing) ---
     air_volume_m3: float = 200.0         # m³ (Renamed from building_volume)
     air_density_kg_m3: float = 1.2       # kg/m³
@@ -29,9 +29,9 @@ class ThermalConfig:
     # --- 2R2C Model Parameters (New) ---
     # Note: 2R2C also uses air_volume_m3, air_density_kg_m3, air_specific_heat_j_kgk
     wall_capacity_j_k: float = 5.0e6      # J/K (Thermal mass of walls)
-    wall_to_ambient_r_k_w: float = 0.01   # K/W (Resistance from wall to ambient)
-    air_to_wall_r_k_w: float = 0.001      # K/W (Resistance from internal air to wall)
-    
+    wall_to_ambient_r_k_w: float = 0.1   # K/W (Resistance from wall to ambient)
+    air_to_wall_r_k_w: float = 0.5      # K/W (Resistance from internal air to wall)
+
     @property
     def air_capacity_j_k(self) -> float:
         """Thermal capacity of the internal air mass."""
@@ -41,7 +41,7 @@ class ThermalConfig:
 class BatteryConfig:
     """Parameters for the battery model."""
     model_type: Literal["simple", "degradation"] = "simple"
-    
+
     capacity_kwh: float = 10.0
     max_power_kw: float = 5.0
     efficiency: float = 0.90 # Round-trip
@@ -83,7 +83,7 @@ class HeatPumpConfig:
     # Only for ramping model
     ramp_rate_w_per_sec: float = 1000.0 # W of *electrical* power change per sec
 
-@dataclass(frozen=True)  # <--- NEW CONFIG
+@dataclass(frozen=True) 
 class ThermalStorageConfig:
     """Parameters for the Thermal Storage (Water Tank) model."""
     capacity_kwh: float = 50.0  # 50 kWh capacity
@@ -94,19 +94,28 @@ class ThermalStorageConfig:
     @property
     def capacity_j(self) -> float:
         return self.capacity_kwh * 3.6e6
-    
+
     @property
     def max_charge_w(self) -> float:
         return self.max_charge_kw * 1000.0
-    
+
     @property
     def max_discharge_w(self) -> float:
         return self.max_discharge_kw * 1000.0
-    
+
     @property
     def standing_loss_w_per_soc(self) -> float:
         # Converts %/hr loss of *capacity* to W loss per unit of SOC
         return (self.capacity_kwh * 1000.0 * self.standing_loss_rate)
+
+@dataclass(frozen=True) # <--- NEW CONFIG
+class SolarConfig:
+    """Parameters for the Solar PV model."""
+    model_type: Literal["simple", "passthrough"] = "simple"
+    panel_area_m2: float = 20.0     # m^2
+    efficiency: float = 0.20        # 20%
+    temp_coefficient: float = -0.004 # %/°C (e.g., -0.4%/°C)
+    reference_temp_c: float = 25.0  # STC temp
 
 
 # --- Dynamic State Structs ---
@@ -124,7 +133,7 @@ class BatteryState:
     soc: Array  # [0.0 - 1.0]
     soh: Array  # [0.0 - 1.0], only for degradation model
 
-@flax_dataclass 
+@flax_dataclass
 class ThermalStorageState:
     """Data-only view of thermal storage state."""
     soc: Array  # [0.0 - 1.0]
@@ -148,39 +157,56 @@ class SystemState:
     heat_pump: HeatPumpState
     air_conditioner: AirConditionerState
 
-@flax_dataclass
+@flax_dataclass  # <--- HEAVILY UPDATED
 class ExogenousData:
     """All external data for a single timestep."""
-    ambient_temp: Array # °C
-    load: Array         # W
-    pv: Array           # W
-    price: Array        # €/kWh
-    internal_gains_w: Array # W (e.g., people, computers)
-    solar_gains_w: Array    # W (e.g., direct sunlight)
+    # --- Weather ---
+    ambient_temp: Array         # °C
+    solar_irradiance_w_m2: Array # W/m^2 (replaces 'pv')
+    
+    # --- Price ---
+    price: Array                # €/kWh
+    
+    # --- Loads (W) ---
+    base_load_w: Array          # Non-controllable, non-device load (replaces 'load')
+    ev_charger_load_w: Array    # from behavioral model
+    dishwasher_load_w: Array    # from behavioral model
+    clothes_dryer_load_w: Array # from behavioral model
+    water_heater_load_w: Array  # from behavioral model
+    cooking_load_w: Array       # from behavioral model
+    
+    # --- Thermal Gains (W) ---
+    occupancy_gains_w: Array    # Heat from people
+    solar_gains_w: Array        # Heat from windows
+    device_gains_w: Array       # Heat from all electrical devices (calculated)
 
 @flax_dataclass
-class SystemActions:  # <--- UPDATED
+class SystemActions: 
     """All control actions for a single timestep."""
-    battery_power_w: Array        # W
+    battery_power_w: Array      # W
     heat_pump_power_w: Array    # W (Electrical)
     ac_power_w: Array           # W (Electrical)
     storage_discharge_w: Array  # W (Thermal)
 
 @flax_dataclass
-class HeatPumpOutput:  # <--- RENAMED
+class HeatPumpOutput:
     """The calculated outputs of the Heat Pump model for one step."""
-    thermal_power_w: Array   # The *actual* (clipped) thermal power *generated*
-    electrical_power_w: Array # The electrical power *consumed*
+    thermal_power_w: Array      # The *actual* (clipped) thermal power *generated*
+    electrical_power_w: Array   # The electrical power *consumed*
 
-@flax_dataclass  # <--- NEW
+@flax_dataclass
 class AirConditionerOutput:
     """The calculated outputs of the AC model for one step."""
-    thermal_power_w: Array   # The *actual* (clipped) thermal power *removed* (will be negative)
-    electrical_power_w: Array # The electrical power *consumed*
+    thermal_power_w: Array      # The *actual* (clipped) thermal power *removed* (will be negative)
+    electrical_power_w: Array   # The electrical power *consumed*
 
-
-@flax_dataclass 
+@flax_dataclass
 class ThermalStorageOutput:
     """Calculated outputs from the thermal storage step."""
-    actual_discharge_w: Array  # Actual thermal power to room
-    rejected_heat_w: Array     # Wasted heat (charged when full)
+    actual_discharge_w: Array   # Actual thermal power to room
+    rejected_heat_w: Array      # Wasted heat (charged when full)
+
+@flax_dataclass # <--- NEW
+class SolarOutput:
+    """Calculated outputs from the solar model step."""
+    pv_generation_w: Array # Actual PV power generated (W)

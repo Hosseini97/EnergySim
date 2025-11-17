@@ -9,7 +9,7 @@ class StateKey(StrEnum):
 
 class ActionKey(StrEnum):
     """Names for control actions sent to components."""
-    BATTERY_POWER_W = "battery_power_w"        # (W) > 0 for charging, < 0 for discharging
+    BATTERY_POWER_W = "battery_power_w"       # (W) > 0 for charging, < 0 for discharging
     HEAT_PUMP_POWER_W = "heat_pump_power_w"
     AC_POWER_W = "ac_power_w"
     STORAGE_DISCHARGE_W = "storage_discharge_w"  # (Thermal power from tank)
@@ -17,8 +17,8 @@ class ActionKey(StrEnum):
 class ExoKey(StrEnum):
     """Names for exogenous data (from dataset/forecasts)."""
     AMBIENT_TEMP = "ambient_temp"
-    LOAD = "load"            # (W) Non-controllable electrical load
-    PV = "pv"                # (W) PV generation
-    PRICE = "price"          # (€/kWh)
-    INTERNAL_GAINS_W = "internal_gains_w"  # <--- NEW (e.g., people, computers)
-    SOLAR_GAINS_W = "solar_gains_w"        # <--- NEW (e.g., direct sunlight)
+    LOAD = "load"                         # (W) Non-controllable electrical load
+    SOLAR_IRRADIANCE = "solar_irradiance_w_m2" # (W/m^2) Solar irradiance input
+    PRICE = "price"                       # (€/kWh)
+    INTERNAL_GAINS_W = "internal_gains_w" # (e.g., people, computers)
+    SOLAR_GAINS_W = "solar_gains_w"       # (e.g., direct sunlight)

@@ -12,16 +12,17 @@ from ..core.models.thermal_model import AbstractThermalModel
 from ..core.models.heat_pump_model import AbstractHeatPumpModel
 from ..core.models.air_conditioner_model import AbstractAirConditionerModel
 from ..core.models.thermal_storage_model import AbstractThermalStorage
+from ..core.models.solar_model import AbstractSolarModel # <-- NEW
 from ..core.models.factory import (
-    create_battery, create_thermal, create_heat_pump, 
-    create_ac, create_storage
+    create_battery, create_thermal, create_heat_pump,
+    create_ac, create_storage, create_solar # <-- NEW
 )
 from ..core.models.objectives import f_cost_step
 from ..core.shared.data_structs import (
     AirConditionerState, HeatPumpState, SystemState, SystemActions, ExogenousData,
     ThermalConfig, BatteryConfig, RewardConfig,
-    HeatPumpConfig, AirConditionerConfig, ThermalStorageConfig,
-    ThermalState, BatteryState, ThermalStorageState
+    HeatPumpConfig, AirConditionerConfig, ThermalStorageConfig, SolarConfig, # <-- NEW
+    ThermalState, BatteryState, ThermalStorageState, SolarOutput # <-- NEW
 )
 import equinox as eqx
 
@@ -40,11 +41,12 @@ class JAX_MPC_Solver:
         b_config: Optional[BatteryConfig] = None,
         hp_config: Optional[HeatPumpConfig] = None,
         ac_config: Optional[AirConditionerConfig] = None,
-        ts_config: Optional[ThermalStorageConfig] = None
+        ts_config: Optional[ThermalStorageConfig] = None,
+        s_config: Optional[SolarConfig] = None # <-- NEW
     ):
         self.N = N_horizon
         self.dt = dt_seconds
-        
+
         # --- 1. Create Models using the Factory ---
         # The MPC solver *has its own instances* of the models.
         # This is crucial, as they must be JIT-compatible.
@@ -53,28 +55,33 @@ class JAX_MPC_Solver:
         self.heat_pump: AbstractHeatPumpModel = create_heat_pump(hp_config)
         self.ac: AbstractAirConditionerModel = create_ac(ac_config)
         self.storage: AbstractThermalStorage = create_storage(ts_config)
-        
+        self.solar: AbstractSolarModel = create_solar(s_config) # <-- NEW
+
         # --- 2. Store Configs for Cost Function ---
         self.configs = (
             self.thermal.config, self.battery.config, r_config,
-            self.heat_pump.config, self.ac.config, self.storage.config
+            self.heat_pump.config, self.ac.config, self.storage.config,
+            self.solar.config # <-- NEW
         )
-        
+
         # --- 3. Define the Scan Step Function ---
         # This function must be defined *inside* __init__ so it can
         # capture `self.battery`, `self.thermal`, etc. in its closure.
-        
+
         @jit
         def mpc_scan_step(state_k: SystemState, inputs_k: tuple[SystemActions, ExogenousData]):
             action_k, exo_k = inputs_k
 
+            # --- NEW: Run stateless models ---
+            solar_output_k = self.solar.calculate(exo_k)
+
             # --- Get model instances from SystemState ---
             # We "re-hydrate" the full Equinox models from the data-only state
-            
+
             # Re-hydrate battery with BOTH soc and soh
             battery_k: AbstractBatteryModel = eqx.tree_at(
-                lambda m: (m.soc, m.soh), 
-                self.battery, 
+                lambda m: (m.soc, m.soh),
+                self.battery,
                 (state_k.battery.soc, state_k.battery.soh)
             )
             thermal_k: AbstractThermalModel = eqx.tree_at(
@@ -114,6 +121,7 @@ class JAX_MPC_Solver:
             cost_k = f_cost_step(
                 state_k, action_k, exo_k,
                 hp_output, ac_output, storage_output,
+                solar_output_k, # <-- NEW
                 self.configs, self.dt
             )
 
@@ -128,7 +136,7 @@ class JAX_MPC_Solver:
             )
 
             return state_k_plus_1, cost_k
-        
+
         # --- 4. Define the Total Horizon Cost Function ---
         @jit
         def f_horizon_cost(
@@ -144,13 +152,13 @@ class JAX_MPC_Solver:
 
         # --- 5. JIT-compile the cost function and its gradient ---
         self.objective_fn = f_horizon_cost # Already JITted inside
-        
+
         # --- 6. Setup the Optimizer ---
         b_conf = self.battery.config
         hp_conf = self.heat_pump.config
         ac_conf = self.ac.config
         ts_conf = self.storage.config
-        
+
         # This PyTree of bounds *must* match SystemActions exactly
         self.action_bounds = (
             SystemActions(
@@ -166,7 +174,7 @@ class JAX_MPC_Solver:
                 storage_discharge_w=jnp.full(N_horizon, ts_conf.max_discharge_w)
             )
         )
-        
+
         self.optimizer = jaxopt.ProjectedGradient(
             fun=self.objective_fn,
             projection=jaxopt.projection.projection_box,
@@ -180,7 +188,7 @@ class JAX_MPC_Solver:
         exo_forecast: ExogenousData,
         warm_start_actions: SystemActions = None
     ) -> SystemActions:
-        
+
         # 1. Create an initial guess (all zeros)
         if warm_start_actions is None:
             warm_start_actions = jax.tree.map(lambda x: jnp.zeros(self.N), self.action_bounds[0])
@@ -192,10 +200,10 @@ class JAX_MPC_Solver:
             initial_state=current_state,
             exo_sequence=exo_forecast
         )
-        
+
         optimal_action_sequence = optim_result.params
-        
+
         # 3. Return the *first* action of the optimal sequence
         first_action = jax.tree.map(lambda x: x[0], optimal_action_sequence)
-        
+
         return first_action
