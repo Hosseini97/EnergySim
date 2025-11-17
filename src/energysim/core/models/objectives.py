@@ -28,8 +28,8 @@ def f_cost_step(
     t_conf, b_conf, r_conf, hp_conf, ac_conf, ts_conf, s_conf = configs
 
     # --- 1. Calculate Electrical Cost ---
-    hp_electrical_power_w = hp_output.electrical_power_w
-    ac_electrical_power_w = ac_output.electrical_power_w
+    hp_electrical_power_w = jnp.sum(hp_output.electrical_power_w)
+    ac_electrical_power_w = jnp.sum(ac_output.electrical_power_w)
     
     # --- NEW: Sum all load components ---
     total_load_w = (
@@ -42,29 +42,39 @@ def f_cost_step(
     )
 
     net_grid_power_w = (
-        total_load_w                   # <--- Use the summed total load
-        + actions.battery_power_w      # <--- This is CORRECT
-        + hp_electrical_power_w
-        + ac_electrical_power_w
-        - solar_output.pv_generation_w # <--- Use the calculated PV output
+        total_load_w
+        + actions.battery_power_w    # Battery action is still scalar
+        + hp_electrical_power_w      # Total from all rooms
+        + ac_electrical_power_w      # Total from all rooms
+        - solar_output.pv_generation_w
     )
 
     net_grid_energy_kwh = (net_grid_power_w * (dt_seconds / 3600.0)) / 1000.0
     cost_euros = jnp.fmax(0.0, net_grid_energy_kwh) * exogenous.price
 
     # --- 2. Calculate Comfort Cost ---
+    # T_room is (N_rooms,), setpoint is scalar. This calculates error for all rooms.
     temp_error = state.thermal.room_temp - t_conf.setpoint
+    
+    # comfort_violation is (N_rooms,) vector
     comfort_violation = jnp.fmax(0.0, jnp.abs(temp_error) - t_conf.comfort_band)
-    comfort_penalty = comfort_violation**2
+    
+    # comfort_penalty is (N_rooms,) vector
+    comfort_penalty_per_room = comfort_violation**2
+    
+    # Sum the penalties from all rooms
+    total_comfort_penalty = jnp.sum(comfort_penalty_per_room)
 
     # --- 3. Calculate Waste Penalty ---
-    rejected_heat_kwh = (storage_output.rejected_heat_w * (dt_seconds / 3600.0)) / 1000.0
+    # Sum the waste from all rooms
+    total_rejected_heat_w = jnp.sum(storage_output.rejected_heat_w)
+    rejected_heat_kwh = (total_rejected_heat_w * (dt_seconds / 3600.0)) / 1000.0
     waste_penalty = rejected_heat_kwh * exogenous.price
 
     # --- 4. Total Weighted Cost ---
     total_cost = (
         (cost_euros * r_conf.price_weight) +
-        (comfort_penalty * r_conf.comfort_weight) +
+        (total_comfort_penalty * r_conf.comfort_weight) + # Use the summed penalty
         (waste_penalty * r_conf.price_weight)
     )
 

@@ -6,22 +6,21 @@ from typing import Optional
 
 from ..core.models.factory import (
     create_battery, create_thermal, create_heat_pump,
-    create_ac, create_storage, create_solar # <-- NEW
+    create_ac, create_storage, create_solar
 )
 from ..core.models.battery_model import AbstractBatteryModel
 from ..core.models.thermal_model import AbstractThermalModel
-# --- UPDATED IMPORTS ---
 from ..core.models.heat_pump_model import AbstractHeatPumpModel
 from ..core.models.air_conditioner_model import AbstractAirConditionerModel
 from ..core.models.thermal_storage_model import AbstractThermalStorage
-from ..core.models.solar_model import AbstractSolarModel # <-- NEW
+from ..core.models.solar_model import AbstractSolarModel
 from ..core.models.objectives import f_cost_step
 from ..core.shared.data_structs import (
     SystemActions, ExogenousData,
     ThermalConfig, BatteryConfig, RewardConfig,
-    HeatPumpConfig, AirConditionerConfig, ThermalStorageConfig, SolarConfig, # <-- NEW
+    HeatPumpConfig, AirConditionerConfig, ThermalStorageConfig, SolarConfig,
     SystemState, BatteryState, ThermalState, ThermalStorageState,
-    HeatPumpState, AirConditionerState, SolarOutput # <-- NEW
+    HeatPumpState, AirConditionerState, SolarOutput
 )
 
 class JAXSimulator:
@@ -34,7 +33,7 @@ class JAXSimulator:
         hp_config: Optional[HeatPumpConfig] = None,
         ac_config: Optional[AirConditionerConfig] = None,
         ts_config: Optional[ThermalStorageConfig] = None,
-        s_config: Optional[SolarConfig] = None # <-- NEW
+        s_config: Optional[SolarConfig] = None
     ):
         self.dt_seconds = dt_seconds
 
@@ -44,22 +43,22 @@ class JAXSimulator:
         self.initial_heat_pump = create_heat_pump(hp_config)
         self.initial_ac = create_ac(ac_config)
         self.initial_storage = create_storage(ts_config)
-        self.initial_solar = create_solar(s_config) # <-- NEW
+        self.initial_solar = create_solar(s_config)
 
         # --- 2. Store Configs for Cost Function ---
         self.configs = (
             self.initial_thermal.config, self.initial_battery.config, r_config,
-            self.initial_heat_pump.config, self.initial_ac.config, 
-            self.initial_storage.config, self.initial_solar.config # <-- NEW
+            self.initial_heat_pump.config, self.initial_ac.config,
+            self.initial_storage.config, self.initial_solar.config
         )
 
         # --- Mutable State Variables ---
         self._battery: AbstractBatteryModel = self.initial_battery
         self._thermal: AbstractThermalModel = self.initial_thermal
-        self._heat_pump: AbstractHeatPumpModel = self.initial_heat_pump # <-- Type hint
-        self._ac: AbstractAirConditionerModel = self.initial_ac       # <-- Type hint
+        self._heat_pump: AbstractHeatPumpModel = self.initial_heat_pump
+        self._ac: AbstractAirConditionerModel = self.initial_ac
         self._storage: AbstractThermalStorage = self.initial_storage
-        self._solar: AbstractSolarModel = self.initial_solar # <-- NEW
+        self._solar: AbstractSolarModel = self.initial_solar
 
         # --- 3. Pre-bind static arguments for the COST function ---
         self.cost_fn = partial(
@@ -72,14 +71,18 @@ class JAXSimulator:
         self.active_configs = {
             "battery": b_config, "heat_pump": hp_config,
             "ac": ac_config, "storage": ts_config,
-            "solar": s_config # <-- NEW
+            "solar": s_config
         }
 
     @property
     def state(self) -> SystemState:
-        # --- UPDATED to build full SystemState ---
+        # --- MODIFIED: Added mass_temp ---
         return SystemState(
-            thermal=ThermalState(room_temp=self._thermal.room_temp, wall_temp=self._thermal.wall_temp),
+            thermal=ThermalState(
+                room_temp=self._thermal.room_temp, 
+                wall_temp=self._thermal.wall_temp,
+                mass_temp=self._thermal.mass_temp # <-- This is the change
+            ),
             battery=BatteryState(soc=self._battery.soc, soh=self._battery.soh),
             storage=ThermalStorageState(soc=self._storage.soc),
             heat_pump=HeatPumpState(current_electrical_w=self._heat_pump.current_electrical_w),
@@ -87,29 +90,35 @@ class JAXSimulator:
         )
 
     def reset(self) -> SystemState:
+        # ... (reset function is unchanged) ...
         """Resets the stateful models and returns the initial state."""
         self._battery = self.initial_battery
         self._thermal = self.initial_thermal
         self._heat_pump = self.initial_heat_pump
         self._ac = self.initial_ac
         self._storage = self.initial_storage
-        self._solar = self.initial_solar # <-- NEW
+        self._solar = self.initial_solar
         return self.state
 
     def step(self, actions: SystemActions, exo_data: ExogenousData) -> tuple[SystemState, float]:
+        # ... (step function is unchanged) ...
         """
         Advances the simulation by one step given actions and exogenous data.
         """
 
         # --- 1. Run stateless models ---
-        solar_output = self._solar.calculate(exo_data) # <-- NEW
+        solar_output = self._solar.calculate(exo_data)
 
         # --- 2. Run HVAC models (now stateful) ---
         next_heat_pump, hp_output = self._heat_pump.step(
-            actions.heat_pump_power_w, self.dt_seconds
+            actions.heat_pump_power_w,
+            exo_data,
+            self.dt_seconds
         )
         next_ac, ac_output = self._ac.step(
-            actions.ac_power_w, self.dt_seconds
+            actions.ac_power_w,
+            exo_data,
+            self.dt_seconds
         )
 
         # --- 3. Run other stateful models ---
@@ -119,7 +128,7 @@ class JAXSimulator:
 
         next_storage, storage_output = self._storage.step(
             actions.storage_discharge_w,
-            hp_output.thermal_power_w, # Use output from new HP
+            hp_output.thermal_power_w,
             self.dt_seconds
         )
 
@@ -127,13 +136,13 @@ class JAXSimulator:
         cost = self.cost_fn(
             self.state, actions, exo_data,
             hp_output, ac_output, storage_output,
-            solar_output # <-- NEW
+            solar_output
         )
 
         # --- 5. Run final stateful model ---
         next_thermal = self._thermal.step(
             storage_output.actual_discharge_w,
-            ac_output.thermal_power_w, # Use output from new AC
+            ac_output.thermal_power_w,
             exo_data,
             self.dt_seconds
         )
@@ -142,8 +151,8 @@ class JAXSimulator:
         self._battery = next_battery
         self._thermal = next_thermal
         self._storage = next_storage
-        self._heat_pump = next_heat_pump # <-- NEW
-        self._ac = next_ac             # <-- NEW
+        self._heat_pump = next_heat_pump
+        self._ac = next_ac
         # self._solar is stateless, no update needed
 
         # --- 7. Return new state and cost ---

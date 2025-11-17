@@ -8,16 +8,23 @@ from energysim.core.models.battery_model import (
     AbstractBatteryModel, SimpleBatteryModel,
     DegradationBatteryModel, PassthroughBatteryModel
 )
+# --- MODIFIED: Import new thermal models ---
 from energysim.core.models.thermal_model import (
     AbstractThermalModel, ThermalModel_1R1C,
-    ThermalModel_2R2C, PassthroughThermalModel
+    ThermalModel_2R2C, ThermalModel_3R2C, ThermalModel_4R3C,
+    PassthroughThermalModel
 )
-from energysim.core.models.heat_pump_model import AbstractHeatPumpModel, PassthroughHeatPumpModel, RampingHeatPumpModel, StatelessHeatPumpModel
-from energysim.core.models.air_conditioner_model import AbstractAirConditionerModel, PassthroughAirConditionerModel, RampingAirConditionerModel, StatelessAirConditionerModel
+from energysim.core.models.heat_pump_model import (
+    AbstractHeatPumpModel, PassthroughHeatPumpModel, RampingHeatPumpModel,
+    StatelessHeatPumpModel, VariableCOPHeatPumpModel
+)
+from energysim.core.models.air_conditioner_model import (
+    AbstractAirConditionerModel, PassthroughAirConditionerModel, RampingAirConditionerModel,
+    StatelessAirConditionerModel, VariableCOPAirConditionerModel
+)
 from energysim.core.models.thermal_storage_model import (
     AbstractThermalStorage, ThermalStorageModel, ThermalStoragePassthrough
 )
-# --- NEW SOLAR IMPORTS ---
 from energysim.core.models.solar_model import (
     AbstractSolarModel, SimpleSolarModel, PassthroughSolarModel
 )
@@ -27,10 +34,10 @@ from energysim.core.models.solar_model import (
 from energysim.core.shared.data_structs import (
     BatteryConfig, ThermalConfig, HeatPumpConfig,
     AirConditionerConfig, ThermalStorageConfig,
-    SolarConfig # <-- NEW
+    SolarConfig
 )
 
-# --- DUMMY CONFIGS for other optional components ---
+# ... (Dummy configs are unchanged) ...
 DUMMY_STORAGE_CONFIG = ThermalStorageConfig(
     capacity_kwh=0.0,
     max_charge_kw=0.0,
@@ -40,12 +47,12 @@ DUMMY_STORAGE_CONFIG = ThermalStorageConfig(
 DUMMY_BATTERY_CONFIG = BatteryConfig(capacity_kwh=0.0, max_power_kw=0.0, efficiency=1.0)
 DUMMY_HP_CONFIG = HeatPumpConfig(max_electrical_power_w=0.0, cop_heating=1.0)
 DUMMY_AC_CONFIG = AirConditionerConfig(max_electrical_power_w=0.0, cop_cooling=1.0)
-# --- NEW SOLAR DUMMY ---
 DUMMY_SOLAR_CONFIG = SolarConfig(model_type="passthrough", panel_area_m2=0.0)
 
 
 # --- Factory Functions ---
 
+# ... (create_battery, create_heat_pump, create_ac, create_storage are unchanged) ...
 def create_battery(config: Optional[BatteryConfig]) -> AbstractBatteryModel:
     if config:
         if config.model_type == "simple":
@@ -55,7 +62,6 @@ def create_battery(config: Optional[BatteryConfig]) -> AbstractBatteryModel:
         else:
             raise ValueError(f"Unknown battery model_type: {config.model_type}")
     else:
-        # Return the clean Passthrough model instead of a dummy config
         return PassthroughBatteryModel(DUMMY_BATTERY_CONFIG)
 
 def create_heat_pump(config: Optional[HeatPumpConfig]) -> AbstractHeatPumpModel:
@@ -64,10 +70,11 @@ def create_heat_pump(config: Optional[HeatPumpConfig]) -> AbstractHeatPumpModel:
             return StatelessHeatPumpModel(config)
         elif config.model_type == "ramping":
             return RampingHeatPumpModel(config)
+        elif config.model_type == "variable_cop":
+            return VariableCOPHeatPumpModel(config)
         else:
             raise ValueError(f"Unknown heat_pump model_type: {config.model_type}")
     else:
-        # Use the PASSTHROUGH model
         return PassthroughHeatPumpModel(DUMMY_HP_CONFIG)
 
 def create_ac(config: Optional[AirConditionerConfig]) -> AbstractAirConditionerModel:
@@ -76,36 +83,39 @@ def create_ac(config: Optional[AirConditionerConfig]) -> AbstractAirConditionerM
             return StatelessAirConditionerModel(config)
         elif config.model_type == "ramping":
             return RampingAirConditionerModel(config)
+        elif config.model_type == "variable_cop":
+            return VariableCOPAirConditionerModel(config)
         else:
             raise ValueError(f"Unknown ac model_type: {config.model_type}")
     else:
-        # Use the PASSTHROUGH model
         return PassthroughAirConditionerModel(DUMMY_AC_CONFIG)
 
 def create_storage(config: Optional[ThermalStorageConfig]) -> AbstractThermalStorage:
     if config:
-        # Use the REAL model
         return ThermalStorageModel(config, initial_soc=0.5)
     else:
-        # Use the PASSTHROUGH (bypass) model
         return ThermalStoragePassthrough(DUMMY_STORAGE_CONFIG)
 
 def create_thermal(config: ThermalConfig) -> AbstractThermalModel:
     """Factory function for thermal models."""
-    # The room itself is not optional, so we always get a config
-
     initial_temp = config.setpoint # Start at setpoint
 
+    # --- MODIFIED: Add new model types ---
     if config.model_type == "1R1C":
         return ThermalModel_1R1C(config, initial_temp=initial_temp)
     elif config.model_type == "2R2C":
         return ThermalModel_2R2C(config, initial_temp=initial_temp)
+    elif config.model_type == "3R2C":
+        return ThermalModel_3R2C(config, initial_temp=initial_temp)
+    elif config.model_type == "4R3C":
+        return ThermalModel_4R3C(config, initial_temp=initial_temp)
     elif config.model_type == "passthrough":
         return PassthroughThermalModel(config, initial_temp=initial_temp)
     else:
         raise ValueError(f"Unknown thermal model_type: {config.model_type}")
 
 def create_solar(config: Optional[SolarConfig]) -> AbstractSolarModel:
+# ... (create_solar is unchanged) ...
     """Factory function for solar PV models."""
     if config:
         if config.model_type == "simple":
@@ -115,7 +125,4 @@ def create_solar(config: Optional[SolarConfig]) -> AbstractSolarModel:
         else:
             raise ValueError(f"Unknown solar model_type: {config.model_type}")
     else:
-        # If no solar config is given, return a passthrough model
-        # with a dummy config. This model will just return 0.0
-        # (since the irradiance field will be 0.0 by default).
         return PassthroughSolarModel(DUMMY_SOLAR_CONFIG)
