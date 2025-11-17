@@ -1,4 +1,3 @@
-# energysim/core/models/factory.py
 import jax.numpy as jnp
 import equinox as eqx
 from typing import Optional
@@ -8,11 +7,8 @@ from energysim.core.models.battery_model import (
     AbstractBatteryModel, SimpleBatteryModel,
     DegradationBatteryModel, PassthroughBatteryModel
 )
-# --- MODIFIED: Import new thermal models ---
 from energysim.core.models.thermal_model import (
-    AbstractThermalModel, ThermalModel_1R1C,
-    ThermalModel_2R2C, ThermalModel_3R2C, ThermalModel_4R3C,
-    PassthroughThermalModel
+    AbstractThermalModel, RCNetworkModel
 )
 from energysim.core.models.heat_pump_model import (
     AbstractHeatPumpModel, PassthroughHeatPumpModel, RampingHeatPumpModel,
@@ -38,21 +34,15 @@ from energysim.core.shared.data_structs import (
 )
 
 # ... (Dummy configs are unchanged) ...
-DUMMY_STORAGE_CONFIG = ThermalStorageConfig(
-    capacity_kwh=0.0,
-    max_charge_kw=0.0,
-    max_discharge_kw=0.0,
-    standing_loss_rate=0.0
-)
-DUMMY_BATTERY_CONFIG = BatteryConfig(capacity_kwh=0.0, max_power_kw=0.0, efficiency=1.0)
-DUMMY_HP_CONFIG = HeatPumpConfig(max_electrical_power_w=0.0, cop_heating=1.0)
-DUMMY_AC_CONFIG = AirConditionerConfig(max_electrical_power_w=0.0, cop_cooling=1.0)
-DUMMY_SOLAR_CONFIG = SolarConfig(model_type="passthrough", panel_area_m2=0.0)
+DUMMY_STORAGE_CONFIG = ThermalStorageConfig()
+DUMMY_BATTERY_CONFIG = BatteryConfig()
+DUMMY_HP_CONFIG = HeatPumpConfig()
+DUMMY_AC_CONFIG = AirConditionerConfig()
+DUMMY_SOLAR_CONFIG = SolarConfig(model_type="passthrough")
 
 
 # --- Factory Functions ---
 
-# ... (create_battery, create_heat_pump, create_ac, create_storage are unchanged) ...
 def create_battery(config: Optional[BatteryConfig]) -> AbstractBatteryModel:
     if config:
         if config.model_type == "simple":
@@ -64,31 +54,33 @@ def create_battery(config: Optional[BatteryConfig]) -> AbstractBatteryModel:
     else:
         return PassthroughBatteryModel(DUMMY_BATTERY_CONFIG)
 
-def create_heat_pump(config: Optional[HeatPumpConfig]) -> AbstractHeatPumpModel:
+def create_heat_pump(config: Optional[HeatPumpConfig], n_rooms: int) -> AbstractHeatPumpModel:
     if config:
         if config.model_type == "stateless":
-            return StatelessHeatPumpModel(config)
+            return StatelessHeatPumpModel(config, n_rooms)
         elif config.model_type == "ramping":
-            return RampingHeatPumpModel(config)
+            return RampingHeatPumpModel(config, n_rooms)
         elif config.model_type == "variable_cop":
-            return VariableCOPHeatPumpModel(config)
+            return VariableCOPHeatPumpModel(config, n_rooms)
         else:
             raise ValueError(f"Unknown heat_pump model_type: {config.model_type}")
     else:
-        return PassthroughHeatPumpModel(DUMMY_HP_CONFIG)
+        # Still pass n_rooms to dummy model for state shape consistency
+        return PassthroughHeatPumpModel(DUMMY_HP_CONFIG, n_rooms)
 
-def create_ac(config: Optional[AirConditionerConfig]) -> AbstractAirConditionerModel:
+def create_ac(config: Optional[AirConditionerConfig], n_rooms: int) -> AbstractAirConditionerModel:
     if config:
         if config.model_type == "stateless":
-            return StatelessAirConditionerModel(config)
+            return StatelessAirConditionerModel(config, n_rooms)
         elif config.model_type == "ramping":
-            return RampingAirConditionerModel(config)
+            return RampingAirConditionerModel(config, n_rooms)
         elif config.model_type == "variable_cop":
-            return VariableCOPAirConditionerModel(config)
+            return VariableCOPAirConditionerModel(config, n_rooms)
         else:
             raise ValueError(f"Unknown ac model_type: {config.model_type}")
     else:
-        return PassthroughAirConditionerModel(DUMMY_AC_CONFIG)
+        # Still pass n_rooms to dummy model for state shape consistency
+        return PassthroughAirConditionerModel(DUMMY_AC_CONFIG, n_rooms)
 
 def create_storage(config: Optional[ThermalStorageConfig]) -> AbstractThermalStorage:
     if config:
@@ -97,25 +89,16 @@ def create_storage(config: Optional[ThermalStorageConfig]) -> AbstractThermalSto
         return ThermalStoragePassthrough(DUMMY_STORAGE_CONFIG)
 
 def create_thermal(config: ThermalConfig) -> AbstractThermalModel:
-    """Factory function for thermal models."""
-    initial_temp = config.setpoint # Start at setpoint
+    """Factory function for the RC-Network model."""
 
-    # --- MODIFIED: Add new model types ---
-    if config.model_type == "1R1C":
-        return ThermalModel_1R1C(config, initial_temp=initial_temp)
-    elif config.model_type == "2R2C":
-        return ThermalModel_2R2C(config, initial_temp=initial_temp)
-    elif config.model_type == "3R2C":
-        return ThermalModel_3R2C(config, initial_temp=initial_temp)
-    elif config.model_type == "4R3C":
-        return ThermalModel_4R3C(config, initial_temp=initial_temp)
-    elif config.model_type == "passthrough":
-        return PassthroughThermalModel(config, initial_temp=initial_temp)
-    else:
-        raise ValueError(f"Unknown thermal model_type: {config.model_type}")
+    N_nodes = config.C_inv_vector.shape[0]
+    initial_T = jnp.full((N_nodes,), config.setpoint)
+    
+    initial_T = initial_T.at[config.ambient_air_index].set(10.0)
+    
+    return RCNetworkModel(config, initial_T)
 
 def create_solar(config: Optional[SolarConfig]) -> AbstractSolarModel:
-# ... (create_solar is unchanged) ...
     """Factory function for solar PV models."""
     if config:
         if config.model_type == "simple":

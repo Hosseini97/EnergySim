@@ -10,7 +10,7 @@ from ..shared.data_structs import (
     Array
 )
 
-@partial(jit, static_argnames=["configs", "dt_seconds"])
+@partial(jit, static_argnames=["dt_seconds"])
 def f_cost_step(
     state: SystemState,
     actions: SystemActions,
@@ -53,17 +53,16 @@ def f_cost_step(
     cost_euros = jnp.fmax(0.0, net_grid_energy_kwh) * exogenous.price
 
     # --- 2. Calculate Comfort Cost ---
-    # T_room is (N_rooms,), setpoint is scalar. This calculates error for all rooms.
-    temp_error = state.thermal.room_temp - t_conf.setpoint
+    # Get the T_vector from the state
+    T_vector = state.thermal.T_vector
     
-    # comfort_violation is (N_rooms,) vector
+    # Use the indices from the config to select the room temps
+    room_temps = T_vector[jnp.array(t_conf.room_air_indices)]
+    
+    # The rest of the logic works on this new `room_temps` vector
+    temp_error = room_temps - t_conf.setpoint
     comfort_violation = jnp.fmax(0.0, jnp.abs(temp_error) - t_conf.comfort_band)
-    
-    # comfort_penalty is (N_rooms,) vector
-    comfort_penalty_per_room = comfort_violation**2
-    
-    # Sum the penalties from all rooms
-    total_comfort_penalty = jnp.sum(comfort_penalty_per_room)
+    total_comfort_penalty = jnp.sum(comfort_violation**2)
 
     # --- 3. Calculate Waste Penalty ---
     # Sum the waste from all rooms

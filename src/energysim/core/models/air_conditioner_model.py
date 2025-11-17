@@ -1,4 +1,3 @@
-# energysim/core/models/air_conditioner_model.py
 import jax.numpy as jnp
 import equinox as eqx
 from ..shared.data_structs import AirConditionerConfig, AirConditionerOutput, Array, ExogenousData
@@ -6,16 +5,13 @@ from ..shared.data_structs import AirConditionerConfig, AirConditionerOutput, Ar
 # --- 1. Abstract Base Class ---
 class AbstractAirConditionerModel(eqx.Module):
     """Abstract base class for all AC models."""
-    # --- Dynamic State ---
     current_electrical_w: Array
-
-    # --- Static Config ---
     config: AirConditionerConfig = eqx.field(static=True)
+    n_rooms: int = eqx.field(static=True) # <-- NEW: Store n_rooms
 
     @eqx.filter_jit
     def step(self,
              requested_electrical_w: Array,
-             # --- NEW: Added exogenous data for T_amb ---
              exogenous: ExogenousData,
              dt_seconds: float
     ) -> tuple['AbstractAirConditionerModel', AirConditionerOutput]:
@@ -24,34 +20,37 @@ class AbstractAirConditionerModel(eqx.Module):
 
 # --- 2. Stateless (Instant) Implementation ---
 class StatelessAirConditionerModel(AbstractAirConditionerModel):
-    """The original model, refactored. Instant ramping."""
-    def __init__(self, config: AirConditionerConfig):
+    """Ramps instantly to the requested power, clipped by per-room max."""
+    def __init__(self, config: AirConditionerConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.array(0.0),
-            config=config
+            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            config=config,
+            n_rooms=n_rooms # <-- UPDATED
         )
 
     @eqx.filter_jit
     def step(self,
              requested_electrical_w: Array,
-             exogenous: ExogenousData, # <-- Matches new signature (unused)
+             exogenous: ExogenousData,
              dt_seconds: float
     ) -> tuple['StatelessAirConditionerModel', AirConditionerOutput]:
-
+        
+        # --- UPDATED: Clip against per-room power ---
+        max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
         actual_electrical_w = jnp.clip(
             requested_electrical_w,
             0.0,
-            self.config.max_electrical_power_w
+            max_w_per_room
         )
-
+        
         # Thermal power is NEGATIVE (removing heat)
         actual_thermal_w = - (actual_electrical_w * self.config.cop_cooling)
-
+        
         output = AirConditionerOutput(
             thermal_power_w=actual_thermal_w,
             electrical_power_w=actual_electrical_w
         )
-
+        
         new_model = eqx.tree_at(
             lambda m: m.current_electrical_w, self, actual_electrical_w
         )
@@ -60,41 +59,44 @@ class StatelessAirConditionerModel(AbstractAirConditionerModel):
 # --- 3. Ramping (Stateful) Implementation ---
 class RampingAirConditionerModel(AbstractAirConditionerModel):
     """A stateful model that limits the rate of change (ramping)."""
-    def __init__(self, config: AirConditionerConfig):
+    def __init__(self, config: AirConditionerConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.array(0.0),
-            config=config
+            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            config=config,
+            n_rooms=n_rooms # <-- UPDATED
         )
 
     @eqx.filter_jit
     def step(self,
              requested_electrical_w: Array,
-             exogenous: ExogenousData, # <-- Matches new signature (unused)
+             exogenous: ExogenousData,
              dt_seconds: float
     ) -> tuple['RampingAirConditionerModel', AirConditionerOutput]:
-
+        
+        # --- UPDATED: Clip target against per-room power ---
+        max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
         target_electrical_w = jnp.clip(
             requested_electrical_w,
             0.0,
-            self.config.max_electrical_power_w
+            max_w_per_room
         )
-
+        
         max_delta_w = self.config.ramp_rate_w_per_sec * dt_seconds
-
+        
         lower_ramp_limit = self.current_electrical_w - max_delta_w
         upper_ramp_limit = self.current_electrical_w + max_delta_w
-
+        
         actual_electrical_w = jnp.clip(
             target_electrical_w, lower_ramp_limit, upper_ramp_limit
         )
-
+        
         actual_thermal_w = - (actual_electrical_w * self.config.cop_cooling)
-
+        
         output = AirConditionerOutput(
             thermal_power_w=actual_thermal_w,
             electrical_power_w=actual_electrical_w
         )
-
+        
         new_model = eqx.tree_at(
             lambda m: m.current_electrical_w, self, actual_electrical_w
         )
@@ -102,33 +104,30 @@ class RampingAirConditionerModel(AbstractAirConditionerModel):
 
 # --- 4. Variable COP (Advanced) Implementation ---
 class VariableCOPAirConditionerModel(AbstractAirConditionerModel):
-    """
-    A stateful model that uses ramping and a variable COP
-    based on ambient temperature.
-    """
-    # Pre-compiled JAX arrays for interpolation
-    cop_temps: Array = eqx.field(static=True)
-    cop_values: Array = eqx.field(static=True)
+    """Ramping + Variable COP based on ambient temperature."""
+    cop_temps: Array
+    cop_values: Array
 
-    def __init__(self, config: AirConditionerConfig):
+    def __init__(self, config: AirConditionerConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.array(0.0),
-            config=config
+            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            config=config,
+            n_rooms=n_rooms # <-- UPDATED
         )
-        # Store lookup table as JAX arrays for JIT
         self.cop_temps = jnp.array(config.cop_ambient_temps_c)
         self.cop_values = jnp.array(config.cop_values_cooling)
 
     @eqx.filter_jit
     def step(self,
              requested_electrical_w: Array,
-             exogenous: ExogenousData, # <-- *Used*
+             exogenous: ExogenousData, 
              dt_seconds: float
     ) -> tuple['VariableCOPAirConditionerModel', AirConditionerOutput]:
-
-        # --- 1. Ramping Logic (same as RampingAirConditionerModel) ---
+        
+        # --- 1. Ramping Logic ---
+        max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
         target_electrical_w = jnp.clip(
-            requested_electrical_w, 0.0, self.config.max_electrical_power_w
+            requested_electrical_w, 0.0, max_w_per_room
         )
         max_delta_w = self.config.ramp_rate_w_per_sec * dt_seconds
         lower_ramp_limit = self.current_electrical_w - max_delta_w
@@ -136,45 +135,45 @@ class VariableCOPAirConditionerModel(AbstractAirConditionerModel):
         actual_electrical_w = jnp.clip(
             target_electrical_w, lower_ramp_limit, upper_ramp_limit
         )
-
+        
         # --- 2. Variable COP Logic ---
         T_amb = exogenous.ambient_temp
-        # Interpolate to find the current COP
         current_cop = jnp.interp(T_amb, self.cop_temps, self.cop_values)
-
+        
         # 3. Calculate thermal generation (negative for cooling)
         actual_thermal_w = - (actual_electrical_w * current_cop)
-
+        
         output = AirConditionerOutput(
             thermal_power_w=actual_thermal_w,
             electrical_power_w=actual_electrical_w
         )
-
+        
         # 4. Update state
         new_model = eqx.tree_at(
             lambda m: m.current_electrical_w, self, actual_electrical_w
         )
-
+        
         return new_model, output
 
 # --- 5. Passthrough (Dummy) Implementation ---
 class PassthroughAirConditionerModel(AbstractAirConditionerModel):
     """A dummy model for when no AC is present."""
-    def __init__(self, config: AirConditionerConfig):
+    def __init__(self, config: AirConditionerConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.array(0.0),
-            config=config
+            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            config=config,
+            n_rooms=n_rooms # <-- UPDATED
         )
 
     @eqx.filter_jit
     def step(self,
              requested_electrical_w: Array,
-             exogenous: ExogenousData, # <-- Matches new signature (unused)
+             exogenous: ExogenousData,
              dt_seconds: float
     ) -> tuple['PassthroughAirConditionerModel', AirConditionerOutput]:
-
+        
         output = AirConditionerOutput(
-            thermal_power_w=0.0,
-            electrical_power_w=0.0
+            thermal_power_w=jnp.zeros_like(self.current_electrical_w), # Return zonal 0
+            electrical_power_w=jnp.zeros_like(self.current_electrical_w) # Return zonal 0
         )
         return self, output
