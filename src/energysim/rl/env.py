@@ -206,9 +206,17 @@ class EnergySimEnv(gym.Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-        
-        # Reset JAX simulator
         state = self.simulator.reset()
+        self._current_step = 0
+
+        # --- 1. Initialize Previous Actions (Zeros) ---
+        # We need a JAX PyTree structure of zeros matching the action definition
+        self._prev_actions_struct = SystemActions(
+            battery_power_w=jnp.array(0.0),
+            heat_pump_power_w=jnp.zeros(self.n_rooms),
+            ac_power_w=jnp.zeros(self.n_rooms),
+            storage_discharge_w=jnp.zeros(self.n_rooms)
+        )
         
         # Reset time
         self._current_step = 0
@@ -236,7 +244,12 @@ class EnergySimEnv(gym.Env):
         actions_struct = self._unflatten_action(action)
         
         # 3. Step the simulator
-        next_state, cost = self.simulator.step(actions_struct, exo_data_k)
+        next_state, cost = self.simulator.step(
+            actions_struct, 
+            self._prev_actions_struct,
+            exo_data_k
+        )
+        self._prev_actions_struct = actions_struct
    
         # 4. Advance time
         self._current_step += 1

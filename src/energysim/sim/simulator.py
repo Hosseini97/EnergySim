@@ -86,6 +86,7 @@ class JAXSimulator(eqx.Module):
     def step(
         self, 
         actions: SystemActions, 
+        prev_actions: SystemActions,
         exo: ExogenousData
     ) -> Tuple['JAXSimulator', float]:
         """
@@ -128,7 +129,10 @@ class JAXSimulator(eqx.Module):
         # 2. Calculate Cost
         # We use 'self.state' (current state before update) for consistency with Gym
         cost = f_cost_step(
-            self.state, actions, exo, 
+            self.state, 
+            actions, 
+            prev_actions,
+            exo,
             hp_out, ac_out, storage_out, solar_out,
             self.configs, self.dt_seconds
         )
