@@ -63,6 +63,13 @@ class RewardConfig(eqx.Module):
 class AirConditionerConfig(eqx.Module):
     model_type: Literal["stateless", "ramping", "variable_cop"] = eqx.field(static=True, default="stateless")
     max_electrical_power_w: float = eqx.field(static=True, default=5000.0)
+    
+    # --- NEW: Inverter Constraints ---
+    min_electrical_power_w: float = eqx.field(static=True, default=500.0) # Unit shuts off below this
+    
+    # --- NEW: Thermal Lag ---
+    tau_thermal_seconds: float = eqx.field(static=True, default=60.0) # Time constant for cooling delivery
+    
     cop_cooling: float = eqx.field(static=True, default=3.0)
     ramp_rate_w_per_sec: float = eqx.field(static=True, default=1000.0)
     cop_ambient_temps_c: Tuple[float, ...] = eqx.field(static=True, default_factory=lambda: (20.0, 25.0, 30.0, 35.0, 40.0))
@@ -71,29 +78,43 @@ class AirConditionerConfig(eqx.Module):
 class HeatPumpConfig(eqx.Module):
     model_type: Literal["stateless", "ramping", "variable_cop"] = eqx.field(static=True, default="stateless")
     max_electrical_power_w: float = eqx.field(static=True, default=5000.0)
+    
+    # --- NEW: Inverter Constraints ---
+    min_electrical_power_w: float = eqx.field(static=True, default=500.0)
+    
+    # --- NEW: Thermal Lag ---
+    tau_thermal_seconds: float = eqx.field(static=True, default=60.0)
+    
     cop_heating: float = eqx.field(static=True, default=3.5)
     ramp_rate_w_per_sec: float = eqx.field(static=True, default=1000.0)
     cop_ambient_temps_c: Tuple[float, ...] = eqx.field(static=True, default_factory=lambda: (-10.0, 0.0, 10.0, 20.0))
     cop_values_heating: Tuple[float, ...] = eqx.field(static=True, default_factory=lambda: (2.5, 3.0, 3.5, 4.0))
 
 class ThermalStorageConfig(eqx.Module):
-    capacity_kwh: float = eqx.field(static=True, default=50.0)
+    # --- UPDATED: Stratification Parameters ---
+    n_nodes: int = eqx.field(static=True, default=5) # Number of vertical layers
+    volume_m3: float = eqx.field(static=True, default=0.3) # ~300 Liters
+    height_m: float = eqx.field(static=True, default=1.5) 
+    
+    # Derived capacity depends on Delta T, generally we define capacity via volume now
+    # but for backward compatibility/cost calc, we might keep a nominal capacity reference.
+    
     max_charge_kw: float = eqx.field(static=True, default=15.0)
     max_discharge_kw: float = eqx.field(static=True, default=15.0)
-    standing_loss_rate: float = eqx.field(static=True, default=0.01)
+    
+    # Heat Loss (U-value * Surface Area approximation per node)
+    loss_coeff_w_k: float = eqx.field(static=True, default=2.0) # W/K loss to ambient per node
+    ambient_temp_c: float = eqx.field(static=True, default=15.0) # Utility room temp
+    
+    # Vertical Conductivity (Simulation of mixing/conduction between water layers)
+    vertical_conductivity_w_mk: float = eqx.field(static=True, default=0.6) # Water conductivity + mixing factor
 
-    @property
-    def capacity_j(self) -> float:
-        return self.capacity_kwh * 3.6e6
     @property
     def max_charge_w(self) -> float:
         return self.max_charge_kw * 1000.0
     @property
     def max_discharge_w(self) -> float:
         return self.max_discharge_kw * 1000.0
-    @property
-    def standing_loss_w_per_soc(self) -> float:
-        return (self.capacity_kwh * 1000.0 * self.standing_loss_rate)
 
 class SolarConfig(eqx.Module):
     model_type: Literal["simple", "passthrough"] = eqx.field(static=True, default="simple")
@@ -115,15 +136,23 @@ class BatteryState:
 
 @flax_dataclass
 class ThermalStorageState:
-    soc: Array
+    temperatures_c: Array
+
+    @property
+    def soc(self) -> Array:
+        # Approximate SOC for observation (avg temp relative to usable range, e.g. 30C to 60C)
+        avg = jnp.mean(self.temperatures_c)
+        return jnp.clip((avg - 30.0) / (60.0 - 30.0), 0.0, 1.0)
 
 @flax_dataclass
 class HeatPumpState:
     current_electrical_w: Array
+    current_thermal_w: Array
 
 @flax_dataclass
 class AirConditionerState:
     current_electrical_w: Array
+    current_thermal_w: Array
 
 @flax_dataclass
 class SystemState:

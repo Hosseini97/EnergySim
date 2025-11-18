@@ -6,6 +6,7 @@ from ..shared.data_structs import AirConditionerConfig, AirConditionerOutput, Ar
 class AbstractAirConditionerModel(eqx.Module):
     """Abstract base class for all AC models."""
     current_electrical_w: Array
+    current_thermal_w: Array
     config: AirConditionerConfig = eqx.field(static=True)
     n_rooms: int = eqx.field(static=True) # <-- NEW: Store n_rooms
 
@@ -58,47 +59,40 @@ class StatelessAirConditionerModel(AbstractAirConditionerModel):
 
 # --- 3. Ramping (Stateful) Implementation ---
 class RampingAirConditionerModel(AbstractAirConditionerModel):
-    """A stateful model that limits the rate of change (ramping)."""
     def __init__(self, config: AirConditionerConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            current_electrical_w=jnp.zeros(n_rooms),
+            current_thermal_w=jnp.zeros(n_rooms),
             config=config,
-            n_rooms=n_rooms # <-- UPDATED
+            n_rooms=n_rooms
         )
 
     @eqx.filter_jit
-    def step(self,
-             requested_electrical_w: Array,
-             exogenous: ExogenousData,
-             dt_seconds: float
-    ) -> tuple['RampingAirConditionerModel', AirConditionerOutput]:
+    def step(self, requested_electrical_w: Array, exogenous: ExogenousData, dt_seconds: float) -> tuple['RampingAirConditionerModel', AirConditionerOutput]:
         
-        # --- UPDATED: Clip target against per-room power ---
-        max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
-        target_electrical_w = jnp.clip(
-            requested_electrical_w,
-            0.0,
-            max_w_per_room
+        # 1. Min Power
+        max_w = self.config.max_electrical_power_w / self.n_rooms
+        min_w = self.config.min_electrical_power_w / self.n_rooms
+        target_w = jnp.where(
+            requested_electrical_w < min_w, 0.0, jnp.clip(requested_electrical_w, 0.0, max_w)
         )
-        
-        max_delta_w = self.config.ramp_rate_w_per_sec * dt_seconds
-        
-        lower_ramp_limit = self.current_electrical_w - max_delta_w
-        upper_ramp_limit = self.current_electrical_w + max_delta_w
-        
-        actual_electrical_w = jnp.clip(
-            target_electrical_w, lower_ramp_limit, upper_ramp_limit
-        )
-        
-        actual_thermal_w = - (actual_electrical_w * self.config.cop_cooling)
-        
-        output = AirConditionerOutput(
-            thermal_power_w=actual_thermal_w,
-            electrical_power_w=actual_electrical_w
-        )
+
+        # 2. Ramping
+        max_delta = self.config.ramp_rate_w_per_sec * dt_seconds
+        actual_elec = jnp.clip(target_w, self.current_electrical_w - max_delta, self.current_electrical_w + max_delta)
+
+        # 3. Cooling (Negative Thermal Power)
+        raw_thermal = -1.0 * actual_elec * self.config.cop_cooling
+
+        # 4. Lag
+        alpha = 1.0 - jnp.exp(-dt_seconds / self.config.tau_thermal_seconds)
+        actual_thermal = (alpha * raw_thermal) + ((1.0 - alpha) * self.current_thermal_w)
+
+        output = AirConditionerOutput(thermal_power_w=actual_thermal, electrical_power_w=actual_elec)
         
         new_model = eqx.tree_at(
-            lambda m: m.current_electrical_w, self, actual_electrical_w
+            lambda m: (m.current_electrical_w, m.current_thermal_w), 
+            self, (actual_elec, actual_thermal)
         )
         return new_model, output
 

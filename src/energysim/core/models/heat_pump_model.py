@@ -2,179 +2,114 @@ import jax.numpy as jnp
 import equinox as eqx
 from ..shared.data_structs import HeatPumpConfig, HeatPumpOutput, Array, ExogenousData
 
-# --- 1. Abstract Base Class ---
 class AbstractHeatPumpModel(eqx.Module):
-    """Abstract base class for all heat pump models."""
     current_electrical_w: Array
+    current_thermal_w: Array
     config: HeatPumpConfig = eqx.field(static=True)
-    n_rooms: int = eqx.field(static=True) # <-- NEW: Store n_rooms
+    n_rooms: int = eqx.field(static=True)
 
     @eqx.filter_jit
-    def step(self,
-             requested_electrical_w: Array,
-             exogenous: ExogenousData,
-             dt_seconds: float
-    ) -> tuple['AbstractHeatPumpModel', HeatPumpOutput]:
+    def step(self, requested_electrical_w: Array, exogenous: ExogenousData, dt_seconds: float) -> tuple['AbstractHeatPumpModel', HeatPumpOutput]:
         raise NotImplementedError
 
-
-# --- 2. Stateless (Instant) Implementation ---
-class StatelessHeatPumpModel(AbstractHeatPumpModel):
-    """Ramps instantly to the requested power, clipped by per-room max."""
-    def __init__(self, config: HeatPumpConfig, n_rooms: int):
-        super().__init__(
-            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
-            config=config,
-            n_rooms=n_rooms # <-- UPDATED
-        )
-
-    @eqx.filter_jit
-    def step(self,
-             requested_electrical_w: Array,
-             exogenous: ExogenousData, 
-             dt_seconds: float
-    ) -> tuple['StatelessHeatPumpModel', HeatPumpOutput]:
-        
-        # --- UPDATED: Clip against per-room power ---
-        max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
-        actual_electrical_w = jnp.clip(
-            requested_electrical_w,
-            0.0, 
-            max_w_per_room
-        )
-        
-        actual_thermal_w = actual_electrical_w * self.config.cop_heating
-        
-        output = HeatPumpOutput(
-            thermal_power_w=actual_thermal_w,
-            electrical_power_w=actual_electrical_w
-        )
-        
-        new_model = eqx.tree_at(
-            lambda m: m.current_electrical_w, self, actual_electrical_w
-        )
-        
-        return new_model, output
-
-# --- 3. Ramping (Stateful) Implementation ---
 class RampingHeatPumpModel(AbstractHeatPumpModel):
-    """A stateful model that limits the rate of change (ramping)."""
     def __init__(self, config: HeatPumpConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            current_electrical_w=jnp.zeros(n_rooms),
+            current_thermal_w=jnp.zeros(n_rooms),
             config=config,
-            n_rooms=n_rooms # <-- UPDATED
+            n_rooms=n_rooms
         )
 
     @eqx.filter_jit
-    def step(self,
-             requested_electrical_w: Array,
-             exogenous: ExogenousData, 
-             dt_seconds: float
-    ) -> tuple['RampingHeatPumpModel', HeatPumpOutput]:
+    def step(self, requested_electrical_w: Array, exogenous: ExogenousData, dt_seconds: float) -> tuple['RampingHeatPumpModel', HeatPumpOutput]:
         
-        # --- UPDATED: Clip target against per-room power ---
+        # 1. Minimum Power Constraints (Snap to 0 if below min)
+        # If ramping down, we might get stuck > 0. Logic: If target < min, target=0.
         max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
-        target_electrical_w = jnp.clip(
-            requested_electrical_w,
-            0.0,
-            max_w_per_room
+        min_w_per_room = self.config.min_electrical_power_w / self.n_rooms
+        
+        target_w = jnp.clip(requested_electrical_w, 0.0, max_w_per_room)
+        target_w = jnp.where(target_w < min_w_per_room, 0.0, target_w)
+
+        # 2. Ramping
+        max_delta = self.config.ramp_rate_w_per_sec * dt_seconds
+        actual_elec = jnp.clip(
+            target_w, 
+            self.current_electrical_w - max_delta, 
+            self.current_electrical_w + max_delta
         )
         
-        max_delta_w = self.config.ramp_rate_w_per_sec * dt_seconds
-        
-        lower_ramp_limit = self.current_electrical_w - max_delta_w
-        upper_ramp_limit = self.current_electrical_w + max_delta_w
-        
-        actual_electrical_w = jnp.clip(
-            target_electrical_w, lower_ramp_limit, upper_ramp_limit
-        )
-        
-        actual_thermal_w = actual_electrical_w * self.config.cop_heating
-        
+        # 3. COP Calculation
+        raw_thermal_gen = actual_elec * self.config.cop_heating
+
+        # 4. Thermal Lag (First Order Filter)
+        # y[t] = alpha * x[t] + (1-alpha) * y[t-1]
+        # alpha = 1 - exp(-dt / tau)
+        alpha = 1.0 - jnp.exp(-dt_seconds / self.config.tau_thermal_seconds)
+        actual_thermal = (alpha * raw_thermal_gen) + ((1.0 - alpha) * self.current_thermal_w)
+
         output = HeatPumpOutput(
-            thermal_power_w=actual_thermal_w,
-            electrical_power_w=actual_electrical_w
+            thermal_power_w=actual_thermal,
+            electrical_power_w=actual_elec
         )
-        
+
         new_model = eqx.tree_at(
-            lambda m: m.current_electrical_w, self, actual_electrical_w
+            lambda m: (m.current_electrical_w, m.current_thermal_w), 
+            self, 
+            (actual_elec, actual_thermal)
         )
-        
         return new_model, output
 
-# --- 4. Variable COP (Advanced) Implementation ---
 class VariableCOPHeatPumpModel(AbstractHeatPumpModel):
-    """Ramping + Variable COP based on ambient temperature."""
     cop_temps: Array
     cop_values: Array
 
     def __init__(self, config: HeatPumpConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            current_electrical_w=jnp.zeros(n_rooms),
+            current_thermal_w=jnp.zeros(n_rooms),
             config=config,
-            n_rooms=n_rooms # <-- UPDATED
+            n_rooms=n_rooms
         )
         self.cop_temps = jnp.array(config.cop_ambient_temps_c)
         self.cop_values = jnp.array(config.cop_values_heating)
 
     @eqx.filter_jit
-    def step(self,
-             requested_electrical_w: Array,
-             exogenous: ExogenousData, 
-             dt_seconds: float
-    ) -> tuple['VariableCOPHeatPumpModel', HeatPumpOutput]:
+    def step(self, requested_electrical_w: Array, exogenous: ExogenousData, dt_seconds: float) -> tuple['VariableCOPHeatPumpModel', HeatPumpOutput]:
         
-        # --- 1. Ramping Logic ---
-        max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
-        target_electrical_w = jnp.clip(
-            requested_electrical_w, 0.0, max_w_per_room
-        )
-        max_delta_w = self.config.ramp_rate_w_per_sec * dt_seconds
-        lower_ramp_limit = self.current_electrical_w - max_delta_w
-        upper_ramp_limit = self.current_electrical_w + max_delta_w
-        actual_electrical_w = jnp.clip(
-            target_electrical_w, lower_ramp_limit, upper_ramp_limit
+        # 1. Min Power & Ramping
+        max_w = self.config.max_electrical_power_w / self.n_rooms
+        min_w = self.config.min_electrical_power_w / self.n_rooms
+        
+        target_w = jnp.where(
+            requested_electrical_w < min_w, 0.0, jnp.clip(requested_electrical_w, 0.0, max_w)
         )
         
-        # --- 2. Variable COP Logic ---
-        T_amb = exogenous.ambient_temp
-        current_cop = jnp.interp(T_amb, self.cop_temps, self.cop_values)
+        max_delta = self.config.ramp_rate_w_per_sec * dt_seconds
+        actual_elec = jnp.clip(target_w, self.current_electrical_w - max_delta, self.current_electrical_w + max_delta)
         
-        # 3. Calculate thermal generation
-        actual_thermal_w = actual_electrical_w * current_cop
+        # 2. Variable COP
+        cop = jnp.interp(exogenous.ambient_temp, self.cop_temps, self.cop_values)
+        raw_thermal_gen = actual_elec * cop
         
-        output = HeatPumpOutput(
-            thermal_power_w=actual_thermal_w,
-            electrical_power_w=actual_electrical_w
-        )
+        # 3. Thermal Lag
+        alpha = 1.0 - jnp.exp(-dt_seconds / self.config.tau_thermal_seconds)
+        actual_thermal = (alpha * raw_thermal_gen) + ((1.0 - alpha) * self.current_thermal_w)
         
-        # 4. Update state
+        output = HeatPumpOutput(thermal_power_w=actual_thermal, electrical_power_w=actual_elec)
+        
         new_model = eqx.tree_at(
-            lambda m: m.current_electrical_w, self, actual_electrical_w
+            lambda m: (m.current_electrical_w, m.current_thermal_w), 
+            self, (actual_elec, actual_thermal)
         )
-        
         return new_model, output
 
-# --- 5. Passthrough (Dummy) Implementation ---
+# Passthrough remains similar but must initialize current_thermal_w
 class PassthroughHeatPumpModel(AbstractHeatPumpModel):
-    """A dummy model for when no heat pump is present."""
     def __init__(self, config: HeatPumpConfig, n_rooms: int):
-        super().__init__(
-            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
-            config=config,
-            n_rooms=n_rooms # <-- UPDATED
-        )
-
+        super().__init__(jnp.zeros(n_rooms), jnp.zeros(n_rooms), config, n_rooms)
+    
     @eqx.filter_jit
-    def step(self,
-             requested_electrical_w: Array,
-             exogenous: ExogenousData,
-             dt_seconds: float
-    ) -> tuple['PassthroughHeatPumpModel', HeatPumpOutput]:
-        
-        output = HeatPumpOutput(
-            thermal_power_w=jnp.zeros_like(self.current_electrical_w), # Return zonal 0
-            electrical_power_w=jnp.zeros_like(self.current_electrical_w) # Return zonal 0
-        )
-        return self, output
+    def step(self, requested_electrical_w: Array, exo: ExogenousData, dt: float):
+        return self, HeatPumpOutput(jnp.zeros_like(self.current_electrical_w), jnp.zeros_like(self.current_electrical_w))

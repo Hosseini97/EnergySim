@@ -19,7 +19,7 @@ from energysim.core.models.air_conditioner_model import (
     StatelessAirConditionerModel, VariableCOPAirConditionerModel
 )
 from energysim.core.models.thermal_storage_model import (
-    AbstractThermalStorage, ThermalStorageModel, ThermalStoragePassthrough
+    AbstractThermalStorage, StratifiedThermalStorageModel, ThermalStoragePassthrough
 )
 from energysim.core.models.solar_model import (
     AbstractSolarModel, SimpleSolarModel, PassthroughSolarModel
@@ -84,7 +84,8 @@ def create_ac(config: Optional[AirConditionerConfig], n_rooms: int) -> AbstractA
 
 def create_storage(config: Optional[ThermalStorageConfig]) -> AbstractThermalStorage:
     if config:
-        return ThermalStorageModel(config, initial_soc=0.5)
+        # Initialize stratified model with a sensible start temp (e.g. 45C)
+        return StratifiedThermalStorageModel(config, initial_temp_c=45.0)
     else:
         return ThermalStoragePassthrough(DUMMY_STORAGE_CONFIG)
 
