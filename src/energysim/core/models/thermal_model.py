@@ -25,9 +25,9 @@ class RCNetworkModel(AbstractThermalModel):
         inputs_flat = jnp.concatenate([
             heating_w,
             cooling_w,
-            exo.solar_gains_w,
-            exo.occupancy_gains_w,
-            exo.device_gains_w
+            jnp.atleast_1d(exo.solar_gains_w),
+            jnp.atleast_1d(exo.occupancy_gains_w),
+            jnp.atleast_1d(exo.device_gains_w)
         ])
         U_vector = self.config.B_matrix @ inputs_flat
         return U_vector

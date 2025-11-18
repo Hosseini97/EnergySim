@@ -9,7 +9,7 @@ class AbstractBatteryModel(eqx.Module):
     soh: Array  # All batteries MUST have soh (even if it's a dummy 1.0)
 
     # --- Static Config ---
-    config: BatteryConfig = eqx.field(static=True)
+    config: BatteryConfig
 
     @eqx.filter_jit
     def step(self, action_power_w: Array, dt_seconds: float) -> 'AbstractBatteryModel':

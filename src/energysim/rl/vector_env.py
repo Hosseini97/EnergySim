@@ -24,7 +24,7 @@ class VectorizedEnergyEnv(eqx.Module):
     num_envs: int = eqx.field(static=True)
     
     # Helper to construct zero-actions for initialization
-    _dummy_action_struct: SystemActions = eqx.field(static=True)
+    _dummy_action_struct: SystemActions
 
     def __init__(
         self,

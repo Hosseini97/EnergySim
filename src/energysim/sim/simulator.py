@@ -38,7 +38,7 @@ class JAXSimulator(eqx.Module):
     solar: AbstractSolarModel
 
     # --- Configs & Constants ---
-    configs: Tuple = eqx.field(static=True)
+    configs: Tuple
     dt_seconds: float = eqx.field(static=True)
 
     def __init__(
@@ -77,9 +77,11 @@ class JAXSimulator(eqx.Module):
         return SystemState(
             thermal=ThermalState(T_vector=self.thermal.T_vector),
             battery=BatteryState(soc=self.battery.soc, soh=self.battery.soh),
-            storage=ThermalStorageState(soc=self.storage.soc),
-            heat_pump=HeatPumpState(current_electrical_w=self.heat_pump.current_electrical_w),
-            air_conditioner=AirConditionerState(current_electrical_w=self.ac.current_electrical_w)
+            storage=ThermalStorageState(temperatures_c=self.storage.temperatures_c),
+            heat_pump=HeatPumpState(current_electrical_w=self.heat_pump.current_electrical_w, 
+                                    current_thermal_w=self.heat_pump.current_thermal_w),
+            air_conditioner=AirConditionerState(current_electrical_w=self.ac.current_electrical_w,
+                                                 current_thermal_w=self.ac.current_thermal_w)
         )
 
     @jax.jit

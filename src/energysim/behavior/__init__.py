@@ -3,13 +3,13 @@
 from .base import AbstractBehavioralModel
 from .ev_charger import SimpleEVModel
 from .shiftable_load import StochasticTimeModel
-from .water_heater import ThermostaticLoadModel
+from .water_heater import ProfiledThermostaticLoad
 from .cooking import StochasticImpulseModel
 
 __all__ = [
     "AbstractBehavioralModel",
     "SimpleEVModel",
     "StochasticTimeModel",
-    "ThermostaticLoadModel",
+    "ProfiledThermostaticLoad",
     "StochasticImpulseModel"
 ]

@@ -5,7 +5,7 @@ from ..shared.data_structs import HeatPumpConfig, HeatPumpOutput, Array, Exogeno
 class AbstractHeatPumpModel(eqx.Module):
     current_electrical_w: Array
     current_thermal_w: Array
-    config: HeatPumpConfig = eqx.field(static=True)
+    config: HeatPumpConfig
     n_rooms: int = eqx.field(static=True)
 
     @eqx.filter_jit
@@ -17,9 +17,10 @@ class StatelessHeatPumpModel(AbstractHeatPumpModel):
     """Ramps instantly to the requested power, clipped by per-room max."""
     def __init__(self, config: HeatPumpConfig, n_rooms: int):
         super().__init__(
-            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            current_electrical_w=jnp.zeros(n_rooms),
+            current_thermal_w=jnp.zeros(n_rooms), # <-- Added to match Abstract Base
             config=config,
-            n_rooms=n_rooms # <-- UPDATED
+            n_rooms=n_rooms
         )
 
     @eqx.filter_jit
@@ -29,7 +30,7 @@ class StatelessHeatPumpModel(AbstractHeatPumpModel):
              dt_seconds: float
     ) -> tuple['StatelessHeatPumpModel', HeatPumpOutput]:
         
-        # --- UPDATED: Clip against per-room power ---
+        # Clip against per-room power limits
         max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
         actual_electrical_w = jnp.clip(
             requested_electrical_w,
@@ -37,6 +38,7 @@ class StatelessHeatPumpModel(AbstractHeatPumpModel):
             max_w_per_room
         )
         
+        # Instant thermal conversion (no lag)
         actual_thermal_w = actual_electrical_w * self.config.cop_heating
         
         output = HeatPumpOutput(
@@ -44,8 +46,11 @@ class StatelessHeatPumpModel(AbstractHeatPumpModel):
             electrical_power_w=actual_electrical_w
         )
         
+        # Update both electrical and thermal state
         new_model = eqx.tree_at(
-            lambda m: m.current_electrical_w, self, actual_electrical_w
+            lambda m: (m.current_electrical_w, m.current_thermal_w), 
+            self, 
+            (actual_electrical_w, actual_thermal_w)
         )
         
         return new_model, output
@@ -64,7 +69,6 @@ class RampingHeatPumpModel(AbstractHeatPumpModel):
     def step(self, requested_electrical_w: Array, exogenous: ExogenousData, dt_seconds: float) -> tuple['RampingHeatPumpModel', HeatPumpOutput]:
         
         # 1. Minimum Power Constraints (Snap to 0 if below min)
-        # If ramping down, we might get stuck > 0. Logic: If target < min, target=0.
         max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
         min_w_per_room = self.config.min_electrical_power_w / self.n_rooms
         
@@ -83,8 +87,6 @@ class RampingHeatPumpModel(AbstractHeatPumpModel):
         raw_thermal_gen = actual_elec * self.config.cop_heating
 
         # 4. Thermal Lag (First Order Filter)
-        # y[t] = alpha * x[t] + (1-alpha) * y[t-1]
-        # alpha = 1 - exp(-dt / tau)
         alpha = 1.0 - jnp.exp(-dt_seconds / self.config.tau_thermal_seconds)
         actual_thermal = (alpha * raw_thermal_gen) + ((1.0 - alpha) * self.current_thermal_w)
 
@@ -99,6 +101,7 @@ class RampingHeatPumpModel(AbstractHeatPumpModel):
             (actual_elec, actual_thermal)
         )
         return new_model, output
+
 
 class VariableCOPHeatPumpModel(AbstractHeatPumpModel):
     cop_temps: Array
@@ -144,11 +147,20 @@ class VariableCOPHeatPumpModel(AbstractHeatPumpModel):
         )
         return new_model, output
 
-# Passthrough remains similar but must initialize current_thermal_w
+
 class PassthroughHeatPumpModel(AbstractHeatPumpModel):
     def __init__(self, config: HeatPumpConfig, n_rooms: int):
-        super().__init__(jnp.zeros(n_rooms), jnp.zeros(n_rooms), config, n_rooms)
+        super().__init__(
+            current_electrical_w=jnp.zeros(n_rooms), 
+            current_thermal_w=jnp.zeros(n_rooms), 
+            config=config, 
+            n_rooms=n_rooms
+        )
     
     @eqx.filter_jit
     def step(self, requested_electrical_w: Array, exo: ExogenousData, dt: float):
-        return self, HeatPumpOutput(jnp.zeros_like(self.current_electrical_w), jnp.zeros_like(self.current_electrical_w))
+        # Pass through 0s, maintain state as 0s
+        return self, HeatPumpOutput(
+            thermal_power_w=self.current_thermal_w, 
+            electrical_power_w=self.current_electrical_w
+        )

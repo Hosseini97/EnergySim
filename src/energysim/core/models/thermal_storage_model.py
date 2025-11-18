@@ -5,7 +5,7 @@ from ..shared.data_structs import ThermalStorageConfig, ThermalStorageOutput, Ar
 
 class AbstractThermalStorage(eqx.Module):
     temperatures_c: Array
-    config: ThermalStorageConfig = eqx.field(static=True)
+    config: ThermalStorageConfig 
 
     @property
     def soc(self):
@@ -134,7 +134,7 @@ class GridThermalStorageModel(AbstractThermalStorage):
     3D Finite Volume Thermal Storage Model.
     Simulates diffusion, boundary losses, and buoyancy-driven mixing.
     """
-    config: GridThermalStorageConfig = eqx.field(static=True)
+    config: GridThermalStorageConfig
     
     def __init__(self, config: GridThermalStorageConfig, initial_temp_c: float = 45.0):
         self.config = config

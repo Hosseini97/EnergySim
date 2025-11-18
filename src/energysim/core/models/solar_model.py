@@ -4,7 +4,7 @@ import equinox as eqx
 from ..shared.data_structs import SolarConfig, ExogenousData, SolarOutput
 
 class AbstractSolarModel(eqx.Module):
-    config: SolarConfig = eqx.field(static=True)
+    config: SolarConfig
 
     @eqx.filter_jit
     def calculate(self, exogenous: ExogenousData) -> SolarOutput:

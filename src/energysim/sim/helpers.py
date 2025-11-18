@@ -1,18 +1,21 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from typing import Dict, List
+from typing import Dict, List, TYPE_CHECKING
 
 from ..core.data.dataset import SimulationDataset
 from ..core.shared.data_structs import ExogenousData
 from ..behavior.base import AbstractBehavioralModel
+
+if TYPE_CHECKING:
+    from ..core.shared.data_structs import SystemState
 
 def precalculate_exogenous_data(
     dataset: SimulationDataset, 
     behavioral_models: Dict[str, AbstractBehavioralModel],
     dt_seconds: float,
     n_rooms: int,
-    dummy_state: 'SystemState' = None
+    dummy_state: "SystemState"
 ) -> ExogenousData:
     """
     Generates a single, static trace of exogenous data on the GPU.

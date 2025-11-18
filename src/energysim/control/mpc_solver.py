@@ -146,8 +146,10 @@ class JAX_MPC_Solver:
                 thermal=ThermalState(T_vector=next_thermal.T_vector),
                 battery=BatteryState(soc=next_battery.soc, soh=next_battery.soh),
                 storage=ThermalStorageState(temperatures_c=next_storage.temperatures_c),
-                heat_pump=HeatPumpState(current_electrical_w=next_hp.current_electrical_w),
-                air_conditioner=AirConditionerState(current_electrical_w=next_ac.current_electrical_w)
+                heat_pump=HeatPumpState(current_electrical_w=next_hp.current_electrical_w, 
+                                        current_thermal_w=next_hp.current_thermal_w),
+                air_conditioner=AirConditionerState(current_electrical_w=next_ac.current_electrical_w, 
+                                                     current_thermal_w=next_ac.current_thermal_w)
             )
             
             # <--- CHANGED: Return (NewState, CurrentAction) as the carry for the next step
