@@ -11,6 +11,45 @@ class AbstractHeatPumpModel(eqx.Module):
     @eqx.filter_jit
     def step(self, requested_electrical_w: Array, exogenous: ExogenousData, dt_seconds: float) -> tuple['AbstractHeatPumpModel', HeatPumpOutput]:
         raise NotImplementedError
+    
+    
+class StatelessHeatPumpModel(AbstractHeatPumpModel):
+    """Ramps instantly to the requested power, clipped by per-room max."""
+    def __init__(self, config: HeatPumpConfig, n_rooms: int):
+        super().__init__(
+            current_electrical_w=jnp.zeros(n_rooms), # <-- UPDATED
+            config=config,
+            n_rooms=n_rooms # <-- UPDATED
+        )
+
+    @eqx.filter_jit
+    def step(self,
+             requested_electrical_w: Array,
+             exogenous: ExogenousData, 
+             dt_seconds: float
+    ) -> tuple['StatelessHeatPumpModel', HeatPumpOutput]:
+        
+        # --- UPDATED: Clip against per-room power ---
+        max_w_per_room = self.config.max_electrical_power_w / self.n_rooms
+        actual_electrical_w = jnp.clip(
+            requested_electrical_w,
+            0.0, 
+            max_w_per_room
+        )
+        
+        actual_thermal_w = actual_electrical_w * self.config.cop_heating
+        
+        output = HeatPumpOutput(
+            thermal_power_w=actual_thermal_w,
+            electrical_power_w=actual_electrical_w
+        )
+        
+        new_model = eqx.tree_at(
+            lambda m: m.current_electrical_w, self, actual_electrical_w
+        )
+        
+        return new_model, output
+    
 
 class RampingHeatPumpModel(AbstractHeatPumpModel):
     def __init__(self, config: HeatPumpConfig, n_rooms: int):

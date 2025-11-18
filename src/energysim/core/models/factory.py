@@ -19,7 +19,7 @@ from energysim.core.models.air_conditioner_model import (
     StatelessAirConditionerModel, VariableCOPAirConditionerModel
 )
 from energysim.core.models.thermal_storage_model import (
-    AbstractThermalStorage, StratifiedThermalStorageModel, ThermalStoragePassthrough
+    AbstractThermalStorage, StratifiedThermalStorageModel, ThermalStoragePassthrough, GridThermalStorageModel
 )
 from energysim.core.models.solar_model import (
     AbstractSolarModel, SimpleSolarModel, PassthroughSolarModel
@@ -30,7 +30,7 @@ from energysim.core.models.solar_model import (
 from energysim.core.shared.data_structs import (
     BatteryConfig, ThermalConfig, HeatPumpConfig,
     AirConditionerConfig, ThermalStorageConfig,
-    SolarConfig
+    SolarConfig, GridThermalStorageConfig
 )
 
 # ... (Dummy configs are unchanged) ...
@@ -82,12 +82,20 @@ def create_ac(config: Optional[AirConditionerConfig], n_rooms: int) -> AbstractA
         # Still pass n_rooms to dummy model for state shape consistency
         return PassthroughAirConditionerModel(DUMMY_AC_CONFIG, n_rooms)
 
-def create_storage(config: Optional[ThermalStorageConfig]) -> AbstractThermalStorage:
-    if config:
-        # Initialize stratified model with a sensible start temp (e.g. 45C)
-        return StratifiedThermalStorageModel(config, initial_temp_c=45.0)
-    else:
+def create_storage(config: Optional[eqx.Module]) -> AbstractThermalStorage:
+    if config is None:
         return ThermalStoragePassthrough(DUMMY_STORAGE_CONFIG)
+        
+    if isinstance(config, GridThermalStorageConfig):
+        # High-Fidelity 2D/3D Model
+        return GridThermalStorageModel(config, initial_temp_c=45.0)
+        
+    elif isinstance(config, ThermalStorageConfig):
+        # Standard 1D Stratified Model
+        return StratifiedThermalStorageModel(config, initial_temp_c=45.0)
+        
+    else:
+        raise ValueError(f"Unknown storage config type: {type(config)}")
 
 def create_thermal(config: ThermalConfig) -> AbstractThermalModel:
     """Factory function for the RC-Network model."""

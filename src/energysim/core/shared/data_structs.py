@@ -115,6 +115,50 @@ class ThermalStorageConfig(eqx.Module):
     @property
     def max_discharge_w(self) -> float:
         return self.max_discharge_kw * 1000.0
+    
+class GridThermalStorageConfig(eqx.Module):
+    # --- Geometry ---
+    # Shape: (Z_layers, Y_rows, X_cols)
+    # For 2D, set X_cols=1. For 1D, set Y=1, X=1.
+    grid_shape: Tuple[int, int, int] = eqx.field(static=True, default=(10, 5, 5)) 
+    
+    total_volume_m3: float = eqx.field(static=True, default=0.3)
+    height_m: float = eqx.field(static=True, default=1.5)
+    
+    # --- Physics ---
+    # Thermal conductivity of water (approx 0.6) + enhancement factor for turbulence
+    thermal_conductivity_w_mk: float = eqx.field(static=True, default=0.65)
+    
+    # Buoyancy: Effective conductivity when T_bottom > T_top (unstable)
+    # We simulate convection by drastically increasing conductivity in unstable regions
+    convection_conductivity_w_mk: float = eqx.field(static=True, default=50.0)
+    
+    loss_coeff_to_ambient_w_m2k: float = eqx.field(static=True, default=0.5) # Insulation quality
+    ambient_temp_c: float = eqx.field(static=True, default=15.0)
+
+    # --- Port Mapping (Where inputs/outputs physically connect) ---
+    # Coordinates are (z, y, x). 0 is Top.
+    charge_inlet_idx: Tuple[int, int, int] = eqx.field(static=True, default=(0, 2, 2)) # Top Center
+    discharge_outlet_idx: Tuple[int, int, int] = eqx.field(static=True, default=(0, 0, 0)) # Top Corner
+    
+    max_charge_kw: float = eqx.field(static=True, default=15.0)
+    max_discharge_kw: float = eqx.field(static=True, default=15.0)
+
+    @property
+    def voxel_volume_m3(self) -> float:
+        z, y, x = self.grid_shape
+        return self.total_volume_m3 / (z * y * x)
+
+    @property
+    def voxel_height_m(self) -> float:
+        return self.height_m / self.grid_shape[0]
+    
+    @property
+    def max_charge_w(self) -> float:
+        return self.max_charge_kw * 1000.0
+    @property
+    def max_discharge_w(self) -> float:
+        return self.max_discharge_kw * 1000.0
 
 class SolarConfig(eqx.Module):
     model_type: Literal["simple", "passthrough"] = eqx.field(static=True, default="simple")
@@ -136,11 +180,11 @@ class BatteryState:
 
 @flax_dataclass
 class ThermalStorageState:
-    temperatures_c: Array
-
+    temperatures_c: Array # Now shape (Z, Y, X)
+    
     @property
     def soc(self) -> Array:
-        # Approximate SOC for observation (avg temp relative to usable range, e.g. 30C to 60C)
+        # Mean temperature metric for observation
         avg = jnp.mean(self.temperatures_c)
         return jnp.clip((avg - 30.0) / (60.0 - 30.0), 0.0, 1.0)
 
