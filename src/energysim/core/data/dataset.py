@@ -41,10 +41,13 @@ class SimulationDataset:
         self.base_load_w = load_col_or_zeros(ExoKey.LOAD) # <--- RENAMED
         
         # --- Thermal Gains ---
-        self.occupancy_gains_w = load_col_or_zeros(ExoKey.INTERNAL_GAINS_W) # <--- RENAMED
+        self.occupancy_gains_w = load_col_or_zeros(ExoKey.INTERNAL_GAINS_W)
         self.solar_gains_w = load_col_or_zeros(ExoKey.SOLAR_GAINS_W)
-        
-        # Note: 'pv' is removed as it's now 'solar_irradiance_w_m2'
+
+        # --- Time ---
+        dt_series = pd.to_datetime(df[ExoKey.TIME])
+        start_of_year = pd.to_datetime(dt_series.dt.year.astype(str) + "-01-01")
+        self.time_of_year_seconds = (dt_series - start_of_year).dt.total_seconds().to_numpy(dtype=np.float32)
 
     def __len__(self) -> int:
         return self.total_steps
@@ -59,6 +62,8 @@ class SimulationDataset:
             ambient_temp=jnp.array(self.ambient_temp[idx]),
             solar_irradiance_w_m2=jnp.array(self.solar_irradiance_w_m2[idx]),
             wind_speed_m_s=jnp.array(self.wind_speed_m_s[idx]),
+            # --- Time ---
+            time_of_year_seconds=jnp.array(self.time_of_year_seconds[idx]),
             # --- Price ---
             price=jnp.array(self.price[idx]),
             # --- Loads ---
@@ -86,6 +91,8 @@ class SimulationDataset:
             ambient_temp=jnp.array(self.ambient_temp[s]),
             solar_irradiance_w_m2=jnp.array(self.solar_irradiance_w_m2[s]),
             wind_speed_m_s=jnp.array(self.wind_speed_m_s[s]),
+            # --- Time ---
+            time_of_year_seconds=jnp.array(self.time_of_year_seconds[s]),
             # --- Price ---
             price=jnp.array(self.price[s]),
             # --- Loads ---

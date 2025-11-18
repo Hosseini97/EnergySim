@@ -161,11 +161,19 @@ class GridThermalStorageConfig(eqx.Module):
         return self.max_discharge_kw * 1000.0
 
 class SolarConfig(eqx.Module):
-    model_type: Literal["simple", "passthrough"] = eqx.field(static=True, default="simple")
+    model_type: Literal["simple", "passthrough", "geometric"] = eqx.field(static=True, default="simple")
+    
+    # Standard
     panel_area_m2: float = eqx.field(static=True, default=20.0)
     efficiency: float = eqx.field(static=True, default=0.20)
     temp_coefficient: float = eqx.field(static=True, default=-0.004)
     reference_temp_c: float = eqx.field(static=True, default=25.0)
+    
+    # --- NEW: High-Fidelity Geometry ---
+    latitude_deg: float = eqx.field(static=True, default=48.13)  # Munich
+    longitude_deg: float = eqx.field(static=True, default=11.58)
+    panel_azimuth_deg: float = eqx.field(static=True, default=180.0) # 180 = South
+    panel_tilt_deg: float = eqx.field(static=True, default=30.0)     # 30 degree pitch
 
 # --- Dynamic State Structs ---
 
@@ -208,27 +216,30 @@ class SystemState:
 
 @flax_dataclass
 class ExogenousData:
-    """All external data for a single timestep."""
     # --- Weather ---
-    ambient_temp: Array       
-    solar_irradiance_w_m2: Array
-    wind_speed_m_s: Array     # <--- ADDED: Required for infiltration model
+    ambient_temp: jnp.ndarray
+    solar_irradiance_w_m2: jnp.ndarray # Global Horizontal Irradiance (GHI)
+    wind_speed_m_s: jnp.ndarray
+    
+    # --- NEW: Time Sync for Solar Physics ---
+    # Current time in seconds from start of year (0 to 31536000)
+    time_of_year_seconds: jnp.ndarray 
 
     # --- Price ---
-    price: Array              
+    price: jnp.ndarray
 
     # --- Loads (W) ---
-    base_load_w: Array       
-    ev_charger_load_w: Array     
-    dishwasher_load_w: Array     
-    clothes_dryer_load_w: Array 
-    water_heater_load_w: Array   
-    cooking_load_w: Array        
+    base_load_w: jnp.ndarray
+    ev_charger_load_w: jnp.ndarray
+    dishwasher_load_w: jnp.ndarray
+    clothes_dryer_load_w: jnp.ndarray
+    water_heater_load_w: jnp.ndarray
+    cooking_load_w: jnp.ndarray
 
     # --- Thermal Gains (W) ---
-    occupancy_gains_w: Array     
-    solar_gains_w: Array         
-    device_gains_w: Array        
+    occupancy_gains_w: jnp.ndarray
+    solar_gains_w: jnp.ndarray
+    device_gains_w: jnp.ndarray
 
 @flax_dataclass
 class SystemActions:

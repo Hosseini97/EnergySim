@@ -16,6 +16,7 @@ class ActionKey(StrEnum):
 
 class ExoKey(StrEnum):
     """Names for exogenous data (from dataset/forecasts)."""
+    TIME = "timestamp"
     AMBIENT_TEMP = "ambient_temp"
     LOAD = "load"                         # (W) Non-controllable electrical load
     SOLAR_IRRADIANCE = "solar_irradiance_w_m2" # (W/m^2) Solar irradiance input
