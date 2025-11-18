@@ -32,6 +32,7 @@ class SimulationDataset:
         # --- Weather ---
         self.ambient_temp = load_col_or_zeros(ExoKey.AMBIENT_TEMP)
         self.solar_irradiance_w_m2 = load_col_or_zeros(ExoKey.SOLAR_IRRADIANCE) # <--- RENAMED
+        self.wind_speed_m_s = load_col_or_zeros(ExoKey.WIND_SPEED_M_S)
         
         # --- Price ---
         self.price = load_col_or_zeros(ExoKey.PRICE)
@@ -57,6 +58,7 @@ class SimulationDataset:
             # --- Weather ---
             ambient_temp=jnp.array(self.ambient_temp[idx]),
             solar_irradiance_w_m2=jnp.array(self.solar_irradiance_w_m2[idx]),
+            wind_speed_m_s=jnp.array(self.wind_speed_m_s[idx]),
             # --- Price ---
             price=jnp.array(self.price[idx]),
             # --- Loads ---
@@ -83,6 +85,7 @@ class SimulationDataset:
             # --- Weather ---
             ambient_temp=jnp.array(self.ambient_temp[s]),
             solar_irradiance_w_m2=jnp.array(self.solar_irradiance_w_m2[s]),
+            wind_speed_m_s=jnp.array(self.wind_speed_m_s[s]),
             # --- Price ---
             price=jnp.array(self.price[s]),
             # --- Loads ---

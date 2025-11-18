@@ -22,3 +22,4 @@ class ExoKey(StrEnum):
     PRICE = "price"                       # (€/kWh)
     INTERNAL_GAINS_W = "internal_gains_w" # (e.g., people, computers)
     SOLAR_GAINS_W = "solar_gains_w"       # (e.g., direct sunlight)
+    WIND_SPEED_M_S = "wind_speed_m_s"           # (m/s) Wind speed for infiltration modeling
