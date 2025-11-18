@@ -222,7 +222,8 @@ class Renderer:
         # 1. Extract Data (Scalars)
         # Thermal
         t_vec = self._to_cpu(state.thermal.T_vector)
-        rooms = t_vec[self.t_config.room_air_indices]
+        room_indices = np.array(self.t_config.room_air_indices)
+        rooms = t_vec[room_indices]
         avg_t = float(np.mean(rooms))
         amb_t = float(self._to_cpu(exo.ambient_temp))
         
@@ -294,7 +295,7 @@ class Renderer:
         
         # Battery Bar
         bat_color = "green" if bat_soc > 0.2 else "red"
-        bat_bar = Bar(size=10, begin=0, end=100, value=bat_soc*100, color=bat_color)
+        bat_bar = Bar(size=10, begin=0, end=100, width=bat_soc*100, color=bat_color)
         elec_table.add_row("Bat SoC:", bat_bar)
         elec_table.add_row("Bat Flow:", f"{bat_w/1000:+.2f} kW")
 

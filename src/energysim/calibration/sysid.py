@@ -57,7 +57,9 @@ class LearnableParams(eqx.Module):
         # 2. Extract Conductances (G = 1/R) from A_matrix
         A = initial_config.A_matrix
         # Mask off-diagonal non-zeros
-        self.adjacency_mask = (jnp.abs(A) > 1e-9) & (1 - jnp.eye(n_nodes))
+        is_connected = jnp.abs(A) > 1e-9
+        is_off_diagonal = jnp.logical_not(jnp.eye(n_nodes, dtype=jnp.bool_))
+        self.adjacency_mask = jnp.logical_and(is_connected, is_off_diagonal)
         
         G_initial = jnp.abs(A) * self.adjacency_mask + 1e-9
         self.log_G_edges = jnp.log(G_initial)
