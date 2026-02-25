@@ -6,7 +6,7 @@ from energysim.sim.simulator import JAXSimulator
 from energysim.core.data.dataset import SimulationDataset
 from energysim.core.shared.data_structs import (
     BatteryConfig, RewardConfig, HeatPumpConfig, AirConditionerConfig, 
-    ThermalStorageConfig, SolarConfig, SystemActions
+    ThermalStorageConfig, PVConfig, SystemActions
 )
 import sample_data_generator
 from build_my_house import create_2_room_house
@@ -14,8 +14,8 @@ from build_my_house import create_2_room_house
 def benchmark():
     print("--- Benchmark: Raw JAX Simulator Throughput ---")
     
-    # 1. Massive Dataset (1 Year)
-    N_DAYS = 365
+    # 1. Massive Dataset (10 Year)
+    N_DAYS = 3650
     sample_data_generator.create_sample_data(n_days=N_DAYS)
     dataset = SimulationDataset(sample_data_generator.FILE_NAME, 900)
     
@@ -24,75 +24,61 @@ def benchmark():
     
     # 2. Init Simulator
     t_config = create_2_room_house()
-    
-    # --- Broadcast Exogenous Data to Zones ---
-    # The thermal model expects inputs for *every* room.
-    # The dataset provides 1 scalar per timestep. We must tile it to (T, n_rooms).
-    n_rooms = len(t_config.room_air_indices) # 2
-
-    def broadcast_to_rooms(arr):
-        # If array is shape (Time,), expand to (Time, n_rooms)
-        if arr.ndim == 1:
-            return jnp.tile(arr[:, None], (1, n_rooms))
-        return arr
-
-    # Use tree_at to update the specific fields in the immutable structure
-    all_exo = eqx.tree_at(
-        lambda d: (d.solar_gains_w, d.occupancy_gains_w, d.device_gains_w),
-        all_exo,
-        (
-            broadcast_to_rooms(all_exo.solar_gains_w),
-            broadcast_to_rooms(all_exo.occupancy_gains_w),
-            broadcast_to_rooms(all_exo.device_gains_w)
-        )
-    )
-    # -------------------------------------------------------
 
     sim = JAXSimulator(
         dt_seconds=900, t_config=t_config, r_config=RewardConfig(),
         b_config=BatteryConfig(), hp_config=HeatPumpConfig(), 
         ac_config=AirConditionerConfig(), ts_config=ThermalStorageConfig(), 
-        s_config=SolarConfig()
+        pv_config=PVConfig()
     )
-    
-    # 3. Create Scan Function
-    dummy_action_template = SystemActions(
-        battery_power_w=jnp.array(0.0),
-        heat_pump_power_w=jnp.zeros(n_rooms), # Ensure this matches n_rooms
-        ac_power_w=jnp.zeros(n_rooms),
-        storage_discharge_w=jnp.zeros(n_rooms)
-    )
+    initial_sim = sim.reset()
 
+    # Pass the ENTIRE simulator PyTree as an argument, not just its state
     @jax.jit
-    def run_full_year(init_state, exo_data):
-        init_carry = (init_state, dummy_action_template)
+    def run_full_year(sim_carry, exo_data):
         
         def step_fn(carry, exo):
-            curr_state, prev_act = carry
-            
-            # Update action using tree_at (Equinox style)
-            current_action = eqx.tree_at(
-                lambda a: a.battery_power_w,
-                dummy_action_template,
-                jnp.array(0.0) # Dummy dynamic value
+            curr_sim, = carry
+
+            action = SystemActions(
+                battery_power_w=jnp.array(0.0),
+                heat_pump_power_w=jnp.array([0.0, 0.0]),
+                ac_power_w=jnp.array([0.0, 0.0]),
+                storage_discharge_w=jnp.array([0.0, 0.0])
             )
             
-            new_sim, cost = sim.step(current_action, prev_act, exo)
-            return (new_sim.state, current_action), cost
+            # Step the simulator that is threaded through the loop
+            new_sim, outputs = curr_sim.step(action, exo)
+            
+            # Must return exactly (new_carry, step_output)
+            # We don't need to save outputs for a pure speed benchmark, so we return None as output
+            return (new_sim, ), None
 
-        (final_state, _), costs = jax.lax.scan(step_fn, init_carry, exo_data)
-        return costs
+        # Thread the full simulator through the scan
+        final_carry, _ = jax.lax.scan(step_fn, (sim_carry, ), exo_data)
+        
+        return final_carry
 
     # 4. Warmup
     print("Compiling JAX Kernel...")
     start = time.perf_counter()
-    run_full_year(sim.state, all_exo).block_until_ready()
+    
+    # Run and block_until_ready on a specific array inside the returned PyTree
+    final_carry_warmup = run_full_year(initial_sim, all_exo)
+    
+    # Wait for the GPU to finish execution. JAX executes asynchronously!
+    # We grab an arbitrary leaf from the final state to force synchronization.
+    final_carry_warmup[0].state.thermal.T_vector.block_until_ready()
+    
     print(f"Compilation finished in {time.perf_counter() - start:.4f}s")
 
     # 5. Benchmark
     print(f"Running {len(dataset)} steps...")
     start = time.perf_counter()
-    run_full_year(sim.state, all_exo).block_until_ready()
+    
+    final_carry_bench = run_full_year(initial_sim, all_exo)
+    final_carry_bench[0].state.thermal.T_vector.block_until_ready()
+    
     end = time.perf_counter()
     
     duration = end - start
