@@ -1,23 +1,23 @@
 # core/models/solar_model.py
 import jax.numpy as jnp
 import equinox as eqx
-from ..shared.data_structs import SolarConfig, ExogenousData, SolarOutput
+from ..shared.data_structs import PVConfig, ExogenousData, PVOutput
 
-class AbstractSolarModel(eqx.Module):
-    config: SolarConfig
+class AbstractPVModel(eqx.Module):
+    config: PVConfig
 
     @eqx.filter_jit
-    def calculate(self, exogenous: ExogenousData) -> SolarOutput:
+    def calculate(self, exogenous: ExogenousData) -> PVOutput:
         """Calculates PV output from exogenous weather."""
         raise NotImplementedError
     
-class GeometricSolarModel(AbstractSolarModel):
+class GeometricPVModel(AbstractPVModel):
     """
     High-Fidelity model considering location, day of year, 
     panel orientation, and temperature coefficients.
     """
     @eqx.filter_jit
-    def calculate(self, exo: ExogenousData) -> SolarOutput:
+    def calculate(self, exo: ExogenousData) -> PVOutput:
         # Constants
         DEG_2_RAD = jnp.pi / 180.0
         SOLAR_CONSTANT = 1361.0 # W/m2 (AM0) - used for theoretical max clamping
@@ -76,11 +76,11 @@ class GeometricSolarModel(AbstractSolarModel):
         temp_factor = 1.0 + (exo.ambient_temp - self.config.reference_temp_c) * self.config.temp_coefficient
         power_w = poa_irradiance * self.config.panel_area_m2 * self.config.efficiency * temp_factor
 
-        return SolarOutput(pv_generation_w=jnp.fmax(0.0, power_w))
+        return PVOutput(pv_generation_w=jnp.fmax(0.0, power_w))
 
-class SimpleSolarModel(AbstractSolarModel):
+class SimplePVModel(AbstractPVModel):
     @eqx.filter_jit
-    def calculate(self, exogenous: ExogenousData) -> SolarOutput:
+    def calculate(self, exogenous: ExogenousData) -> PVOutput:
         # 1. Get Irradiance (W/m^2)
         irradiance_w_m2 = exogenous.solar_irradiance_w_m2
         
@@ -98,13 +98,13 @@ class SimpleSolarModel(AbstractSolarModel):
         
         # Clip at 0 (no negative generation)
         pv_generation_w = jnp.fmax(0.0, power_w)
-        return SolarOutput(pv_generation_w=pv_generation_w)
+        return PVOutput(pv_generation_w=pv_generation_w)
 
-class PassthroughSolarModel(AbstractSolarModel):
+class PassthroughPVModel(AbstractPVModel):
     """A dummy model for backward compatibility. 
     Assumes 'solar_irradiance_w_m2' is actually pre-computed PV power.
     """
     @eqx.filter_jit
-    def calculate(self, exogenous: ExogenousData) -> SolarOutput:
+    def calculate(self, exogenous: ExogenousData) -> PVOutput:
         # Pass through the value directly
-        return SolarOutput(pv_generation_w=exogenous.solar_irradiance_w_m2)
+        return PVOutput(pv_generation_w=exogenous.solar_irradiance_w_m2)
