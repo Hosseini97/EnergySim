@@ -24,12 +24,19 @@ class _InputMapping:
     fraction: float
 
 class RCNetworkBuilder:
-    def __init__(self, n_rooms: int):
+    def __init__(self, n_rooms: int, splits: Optional[Tuple[Tuple[float, ...], Tuple[float, ...], Tuple[float, ...]]] = None):
         self.n_rooms = n_rooms
         self._nodes: Dict[str, _RCNode] = {}
         self._resistors: List[_Resistor] = []
         self._mappings: List[_InputMapping] = []
-        
+
+        if splits:
+            self._solar_split_factors, self._occupancy_split_factors, self._device_split_factors = splits
+        else:
+            self._solar_split_factors = (1.0/n_rooms,) * n_rooms
+            self._occupancy_split_factors = (1.0/n_rooms,) * n_rooms
+            self._device_split_factors = (1.0/n_rooms,) * n_rooms
+
         # Infiltration / Coupling Settings
         self._infiltration_enabled = False
         self._inf_params = (0.1, 0.0, 0.0) # k1, k2, k3
@@ -113,10 +120,43 @@ class RCNetworkBuilder:
         if self._waste_heat_node_name:
             waste_idx = self._nodes[self._waste_heat_node_name].index
 
+        # N_inputs_flat is 10 (5 keys * 2 rooms)
+        # N_raw_inputs is 7 (2 heating + 2 cooling + 1 solar + 1 occ + 1 dev)
+        N_raw_inputs = (2 * self.n_rooms) + 3 
+        split_matrix = np.zeros((N_inputs_flat, N_raw_inputs), dtype=np.float32)
+
+        # Row index track (where it goes in the 10-vector)
+        # Column index track (where it comes from in the 7-vector)
+        col_ptr = 0
+
+        for key in self._input_keys_order:
+            if key in ["heating_w", "cooling_w"]:
+                # These are already per-room (length 2), so map 1-to-1
+                for r in range(self.n_rooms):
+                    row_idx = self._get_input_col_index(key, r)
+                    split_matrix[row_idx, col_ptr] = 1.0
+                    col_ptr += 1
+            else:
+                # These are scalars (length 1), so map 1-to-many using split factors
+                for r in range(self.n_rooms):
+                    row_idx = self._get_input_col_index(key, r)
+                    if key == "solar_gains_w":
+                        split_matrix[row_idx, col_ptr] = self._solar_split_factors[r]
+                    elif key == "occupancy_gains_w":
+                        split_matrix[row_idx, col_ptr] = self._occupancy_split_factors[r]
+                    elif key == "device_gains_w":
+                        split_matrix[row_idx, col_ptr] = self._device_split_factors[r]
+                # Move to next raw input only after filling all room rows for this scalar
+                col_ptr += 1
+
+        B_matrix_final = B_matrix @ split_matrix
+
+
         return ThermalConfig(
             A_matrix=jnp.array(A_matrix),
             C_inv_vector=jnp.array(c_inv_vector),
-            B_matrix=jnp.array(B_matrix),
+            B_matrix=jnp.array(B_matrix_final),
+
             ambient_air_index=self._nodes["ambient"].index,
             room_air_indices=find_indices("room_air_"),
             wall_indices=find_indices("wall_"),

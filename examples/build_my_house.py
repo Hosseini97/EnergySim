@@ -6,19 +6,22 @@ def create_2_room_house():
     Creates a simple 2-room house configuration (Living Room + Bedroom).
     """
     # 1. Initialize builder
-    builder = RCNetworkBuilder(n_rooms=2)
+    solar_split_factors = (0.7, 0.3)  # Solar hits Living Room more than Bedroom
+    occupancy_split_factors = (0.6, 0.4)  # More people spend time in Living Room than Bedroom
+    device_split_factors = (0.5, 0.5)  # Devices are evenly split for simplicity
+    builder = RCNetworkBuilder(n_rooms=2, splits=(solar_split_factors, occupancy_split_factors, device_split_factors))
 
     # 2. Add nodes (Capacities in J/K)
     # Living Room (Zone 0)
-    builder.add_node("room_air_0", capacity_j_k=5.0e5) 
-    builder.add_node("wall_0", capacity_j_k=1.0e7)
+    builder.add_node("room_air_0", capacity_j_k=5.0e6) 
+    builder.add_node("wall_0", capacity_j_k=1.0e8)
     
     # Bedroom (Zone 1)
-    builder.add_node("room_air_1", capacity_j_k=3.0e5)
-    builder.add_node("wall_1", capacity_j_k=0.8e7)
+    builder.add_node("room_air_1", capacity_j_k=3.0e6)
+    builder.add_node("wall_1", capacity_j_k=0.8e8)
     
     # Shared Wall
-    builder.add_node("shared_wall", capacity_j_k=0.5e7)
+    builder.add_node("shared_wall", capacity_j_k=0.5e8)
 
     # 3. Add connections (Resistances in K/W)
     # Living Room Connectivity
