@@ -74,36 +74,45 @@ class RCNetworkModel(AbstractThermalModel):
 
     @eqx.filter_jit
     def step(self, heating_w: Array, cooling_w: Array, waste_heat_w: float, exogenous: ExogenousData, dt_seconds: float) -> 'RCNetworkModel':
-        
+
         T_k = self.T_vector
+
+        # Helper to compute the full dT/dt vector
+        def get_derivative(T_state):
+            # 1. Base Dynamics
+            U_vector = self._build_input_vector(heating_w, cooling_w, exogenous)
+            A_T = self.config.A_matrix @ T_state
+            
+            # 2. Infiltration & Waste
+            Q_inf = self._calculate_dynamic_infiltration(T_state, exogenous.ambient_temp, exogenous.wind_speed_m_s)
+            
+            valid_node = self.config.waste_heat_node_index >= 0
+            waste_node_idx = jnp.where(valid_node, self.config.waste_heat_node_index, 0)
+            added_heat = jnp.where(valid_node, waste_heat_w, 0.0)
+            Q_waste = jnp.zeros_like(T_state).at[waste_node_idx].add(added_heat)
+            
+            # 3. dT/dt
+            total_heat_flow = A_T + U_vector + Q_inf + Q_waste
+            dT_dt = self.config.C_inv_vector * total_heat_flow
+            
+            # Ambient node doesn't change
+            return dT_dt.at[self.config.ambient_air_index].set(0.0)
+
+        # --- Heun's Method (RK2) Integration ---
+        # Step 1: Predict (Explicit Euler)
+        k1 = get_derivative(T_k)
+        T_predict = T_k + (k1 * dt_seconds)
         
-        # 1. Set Ambient Node
-        T_k = T_k.at[self.config.ambient_air_index].set(exogenous.ambient_temp)
+        # Override ambient before step 2 (Ambient is driven by weather, not physics)
+        T_predict = T_predict.at[self.config.ambient_air_index].set(exogenous.ambient_temp)
 
-        # 2. Base Dynamics: A*T + B*U
-        U_vector = self._build_input_vector(heating_w, cooling_w, exogenous)
-        A_T = self.config.A_matrix @ T_k
+        # Step 2: Correct (Evaluate derivative at predicted future state)
+        k2 = get_derivative(T_predict)
         
-        # 3. Dynamic Infiltration
-        Q_inf = self._calculate_dynamic_infiltration(T_k, exogenous.ambient_temp, exogenous.wind_speed_m_s)
+        # Final update is the average of the two slopes
+        T_k_plus_1 = T_k + ((k1 + k2) / 2.0) * dt_seconds
 
-        # 4. Waste Heat Coupling (from Storage/HVAC)
-        Q_waste = jnp.zeros_like(T_k)
-        # Only apply if a valid node index is set in config
-        valid_node = self.config.waste_heat_node_index >= 0
-        waste_node_idx = jnp.where(valid_node, self.config.waste_heat_node_index, 0) # Default to 0 if invalid to avoid index error
-        # If valid, add heat; if not, add 0
-        added_heat = jnp.where(valid_node, waste_heat_w, 0.0)
-        Q_waste = Q_waste.at[waste_node_idx].add(added_heat)
-
-        # 5. Integration
-        # dT/dt = C_inv * (Sum of Heat Flows)
-        total_heat_flow = A_T + U_vector + Q_inf + Q_waste
-        dT_dt_vector = self.config.C_inv_vector * total_heat_flow
-
-        # Zero out derivative for ambient node (infinite capacity)
-        dT_dt_vector = dT_dt_vector.at[self.config.ambient_air_index].set(0.0)
-
-        T_k_plus_1 = T_k + dT_dt_vector * dt_seconds
+        # Ensure ambient is perfectly set to exogenous data
+        T_k_plus_1 = T_k_plus_1.at[self.config.ambient_air_index].set(exogenous.ambient_temp)
 
         return eqx.tree_at(lambda m: m.T_vector, self, T_k_plus_1)
