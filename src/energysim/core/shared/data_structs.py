@@ -143,7 +143,7 @@ class GridThermalStorageConfig(eqx.Module):
         return self.max_discharge_kw * 1000.0
 
 
-class SolarConfig(eqx.Module):
+class PVConfig(eqx.Module):
     model_type: Literal["simple", "passthrough", "geometric"] = eqx.field(static=True, default="simple")
     
     panel_area_m2: float = eqx.field(static=True, default=20.0)
@@ -187,6 +187,9 @@ class HeatPumpState(eqx.Module):
 class AirConditionerState(eqx.Module):
     current_electrical_w: Array
     current_thermal_w: Array
+
+class PVState(eqx.Module):
+    current_power_w: Array
 
 class SystemState(eqx.Module):
     thermal: ThermalState
@@ -237,5 +240,16 @@ class ThermalStorageOutput(eqx.Module):
     rejected_heat_w: Array
     standing_loss_w: Array
 
-class SolarOutput(eqx.Module):
+class PVOutput(eqx.Module):
     pv_generation_w: Array
+
+class SystemOutputs(eqx.Module):
+    """
+    Captures all instantaneous outputs generated during a single simulation step.
+    This is passed to the external cost function / reward calculator.
+    """
+    pv: PVOutput
+    hp: HeatPumpOutput
+    ac: AirConditionerOutput
+    storage: ThermalStorageOutput
+    total_waste_heat_w: Array

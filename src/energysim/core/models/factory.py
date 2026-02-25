@@ -21,8 +21,8 @@ from energysim.core.models.air_conditioner_model import (
 from energysim.core.models.thermal_storage_model import (
     AbstractThermalStorage, StratifiedThermalStorageModel, ThermalStoragePassthrough, GridThermalStorageModel
 )
-from energysim.core.models.solar_model import (
-    AbstractSolarModel, SimpleSolarModel, PassthroughSolarModel
+from energysim.core.models.pv_model import (
+    AbstractPVModel, SimplePVModel, GeometricPVModel, PassthroughPVModel
 )
 from energysim.core.models.forecaster import (
     AbstractForecaster, GaussianNoiseForecaster, 
@@ -34,7 +34,7 @@ from energysim.core.models.forecaster import (
 from energysim.core.shared.data_structs import (
     BatteryConfig, ThermalConfig, HeatPumpConfig,
     AirConditionerConfig, ThermalStorageConfig,
-    SolarConfig, GridThermalStorageConfig
+    PVConfig, GridThermalStorageConfig
 )
 
 # ... (Dummy configs are unchanged) ...
@@ -42,7 +42,7 @@ DUMMY_STORAGE_CONFIG = ThermalStorageConfig()
 DUMMY_BATTERY_CONFIG = BatteryConfig()
 DUMMY_HP_CONFIG = HeatPumpConfig()
 DUMMY_AC_CONFIG = AirConditionerConfig()
-DUMMY_SOLAR_CONFIG = SolarConfig(model_type="passthrough")
+DUMMY_SOLAR_CONFIG = PVConfig(model_type="passthrough")
 
 
 # --- Factory Functions ---
@@ -111,17 +111,19 @@ def create_thermal(config: ThermalConfig) -> AbstractThermalModel:
     
     return RCNetworkModel(config, initial_T)
 
-def create_solar(config: Optional[SolarConfig]) -> AbstractSolarModel:
+def create_pv(config: Optional[PVConfig]) -> AbstractPVModel:
     """Factory function for solar PV models."""
     if config:
-        if config.model_type == "simple":
-            return SimpleSolarModel(config)
+        if config.model_type == "geometric":
+            return GeometricPVModel(config)
+        elif config.model_type == "simple":
+            return SimplePVModel(config)
         elif config.model_type == "passthrough":
-            return PassthroughSolarModel(config)
+            return PassthroughPVModel(config)
         else:
             raise ValueError(f"Unknown solar model_type: {config.model_type}")
     else:
-        return PassthroughSolarModel(DUMMY_SOLAR_CONFIG)
+        return PassthroughPVModel(DUMMY_SOLAR_CONFIG)
 
 def create_forecaster(config: Optional[ForecastConfig] = None) -> AbstractForecaster:
     if config is None:
