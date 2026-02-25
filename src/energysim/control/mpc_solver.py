@@ -1,255 +1,158 @@
 import jax
 import jax.numpy as jnp
-from jax import jit, grad, lax
-from functools import partial
+from jax import jit, lax
 from typing import Optional
 import jaxopt
 import equinox as eqx
 
-# Import models and factory
-from ..core.models.battery_model import AbstractBatteryModel
-from ..core.models.thermal_model import AbstractThermalModel
-from ..core.models.heat_pump_model import AbstractHeatPumpModel
-from ..core.models.air_conditioner_model import AbstractAirConditionerModel
-from ..core.models.thermal_storage_model import AbstractThermalStorage
-from ..core.models.solar_model import AbstractSolarModel
-from ..core.models.factory import (
-    create_battery, create_thermal, create_heat_pump,
-    create_ac, create_storage, create_solar
-)
-
-# --- UPDATED IMPORTS: Added f_terminal_cost ---
-from ..core.models.objectives import f_cost_step, f_terminal_cost
+# Import the simulator and objective functions
+from ..sim.simulator import JAXSimulator
+from ..utils.objectives import f_cost_step, f_terminal_cost
 
 from ..core.shared.data_structs import (
-    AirConditionerState, HeatPumpState, SystemState, SystemActions, ExogenousData,
-    ThermalConfig, BatteryConfig, RewardConfig,
-    HeatPumpConfig, AirConditionerConfig, ThermalStorageConfig, SolarConfig,
-    ThermalState, BatteryState, ThermalStorageState, SolarOutput
+    SystemActions, ExogenousData, SystemState
 )
-
 
 class JAX_MPC_Solver:
     """
-    A full MPC solver built on JAX, supporting modular components.
+    A high-level MPC solver that natively utilizes the JAXSimulator 
+    for perfect environment modeling and rollout.
     """
     def __init__(
         self,
         N_horizon: int,
-        dt_seconds: float,
-        # --- Configs ---
-        t_config: ThermalConfig,
-        r_config: RewardConfig,
-        b_config: Optional[BatteryConfig] = None,
-        hp_config: Optional[HeatPumpConfig] = None,
-        ac_config: Optional[AirConditionerConfig] = None,
-        ts_config: Optional[ThermalStorageConfig] = None,
-        s_config: Optional[SolarConfig] = None
+        simulator_template: JAXSimulator  # <--- Take the simulator as a template
     ):
         self.N = N_horizon
-        self.dt = dt_seconds
+        self.n_rooms = len(simulator_template.thermal.config.room_air_indices)
 
-        self.n_rooms = len(t_config.room_air_indices)
-        if self.n_rooms == 0:
-            raise ValueError(
-                "ThermalConfig has no 'room_air_indices'. MPC solver requires n_rooms > 0."
-            )
-
-        # --- 1. Create Models using the Factory ---
-        self.battery: AbstractBatteryModel = create_battery(b_config)
-        self.thermal: AbstractThermalModel = create_thermal(t_config)
-        self.heat_pump: AbstractHeatPumpModel = create_heat_pump(hp_config, self.n_rooms)
-        self.ac: AbstractAirConditionerModel = create_ac(ac_config, self.n_rooms)
-        self.storage: AbstractThermalStorage = create_storage(ts_config)
-        self.solar: AbstractSolarModel = create_solar(s_config)
-
-        # --- 2. Store Configs for Cost Function ---
-        self.configs = (
-            self.thermal.config, self.battery.config, r_config,
-            self.heat_pump.config, self.ac.config, self.storage.config,
-            self.solar.config
-        )
-
-        # --- 3. Define the Scan Step Function ---
-        @jit
-        def mpc_scan_step(
-            carry: tuple[SystemState, SystemActions], # <--- CHANGED: Carry now holds (State, PrevAction)
-            inputs_k: tuple[SystemActions, ExogenousData]
-        ):
-            state_k, prev_action_k = carry # Unpack previous action for Slew Rate
-            action_k, exo_k = inputs_k
-
-            solar_output_k = self.solar.calculate(exo_k)
-
-            # --- Re-hydrate models ---
-            battery_k = eqx.tree_at(
-                lambda m: (m.soc, m.soh),
-                self.battery,
-                (state_k.battery.soc, state_k.battery.soh)
-            )
-            thermal_k = eqx.tree_at(
-                lambda m: m.T_vector, self.thermal, state_k.thermal.T_vector
-            )
-            storage_k = eqx.tree_at(
-                lambda m: m.temperatures_c, self.storage, state_k.storage.temperatures_c
-            )
-            hp_k = eqx.tree_at(
-                lambda m: m.current_electrical_w, self.heat_pump, state_k.heat_pump.current_electrical_w
-            )
-            ac_k = eqx.tree_at(
-                lambda m: m.current_electrical_w, self.ac, state_k.air_conditioner.current_electrical_w
-            )
-
-            # --- A. Run HVAC models ---
-            next_hp, hp_output = hp_k.step(
-                action_k.heat_pump_power_w, exo_k, self.dt
-            )
-            next_ac, ac_output = ac_k.step(
-                action_k.ac_power_w, exo_k, self.dt
-            )
-
-            # --- B. Run other stateful models ---
-            next_battery = battery_k.step(action_k.battery_power_w, self.dt)
-            
-            next_storage, storage_output = storage_k.step(
-                action_k.storage_discharge_w,
-                hp_output.thermal_power_w,
-                self.dt
-            )
-
-            # --- C. Run Thermal Model ---
-            heating_w = storage_output.actual_discharge_w
-            cooling_w = ac_output.thermal_power_w
-            
-            # Calculate total waste heat (storage losses + rejected heat)
-            total_waste_w = storage_output.standing_loss_w + jnp.sum(storage_output.rejected_heat_w)
-
-            next_thermal = thermal_k.step(
-                heating_w,
-                cooling_w,
-                total_waste_w,
-                exo_k,
-                self.dt
-            )
-
-            # --- D. Calculate cost of current step ---
-            # <--- CHANGED: Pass prev_action_k to f_cost_step
-            cost_k = f_cost_step(
-                state_k, action_k, prev_action_k, exo_k,
-                hp_output, ac_output, storage_output,
-                solar_output_k,
-                self.configs, self.dt
-            )
-
-            # --- E. Create next state (data-only) ---
-            state_k_plus_1 = SystemState(
-                thermal=ThermalState(T_vector=next_thermal.T_vector),
-                battery=BatteryState(soc=next_battery.soc, soh=next_battery.soh),
-                storage=ThermalStorageState(temperatures_c=next_storage.temperatures_c),
-                heat_pump=HeatPumpState(current_electrical_w=next_hp.current_electrical_w, 
-                                        current_thermal_w=next_hp.current_thermal_w),
-                air_conditioner=AirConditionerState(current_electrical_w=next_ac.current_electrical_w, 
-                                                     current_thermal_w=next_ac.current_thermal_w)
-            )
-            
-            # <--- CHANGED: Return (NewState, CurrentAction) as the carry for the next step
-            return (state_k_plus_1, action_k), cost_k
-
-        self.mpc_scan_step = mpc_scan_step # Save for reuse
-
-        # --- 4. Define the Total Horizon Cost Function ---
+        # --- 1. Define the Total Horizon Cost Function ---
+        # Note: jaxopt differentiates with respect to the *first* argument (action_sequence)
         @jit
         def f_horizon_cost(
-            action_sequence: SystemActions, # PyTree of actions [N, ...]
-            initial_state: SystemState,     # static
-            exo_sequence: ExogenousData     # PyTree of forecasts [N, ...]
+            action_sequence: SystemActions, 
+            initial_sim: JAXSimulator,      # The PyTree containing state and config
+            exo_sequence: ExogenousData     
         ):
-            inputs_over_horizon = (action_sequence, exo_sequence)
             
-            # <--- CHANGED: Initialize Carry with dummy "Previous Action" (Zeros) for t=0
-            # We use tree_map to create a structure of zeros matching a single time step of actions
-            dummy_prev_action = jax.tree.map(
-                lambda x: jnp.zeros_like(x[0]), 
-                action_sequence
-            )
-            
-            init_carry = (initial_state, dummy_prev_action)
+            # The scan step now just calls the simulator's native step
+            def mpc_scan_step(carry, inputs_k):
+                sim_k,  = carry
+                action_k, exo_k = inputs_k
 
-            # 1. Run the Scan
-            (final_state, final_action), cost_sequence = lax.scan(
-                self.mpc_scan_step, init_carry, inputs_over_horizon
+                # 1. Step the physics engine
+                next_sim, outputs_k = sim_k.step(action_k, exo_k)
+
+                # 2. Evaluate the economic/comfort cost
+                cost_k = f_cost_step(
+                    state=sim_k.state,
+                    actions=action_k,
+                    outputs=outputs_k,
+                    exogenous=exo_k,
+                    configs=sim_k.configs,
+                    dt_seconds=sim_k.dt_seconds
+                )
+
+                # Return the updated simulator as the next carry
+                return (next_sim, ), cost_k
+
+            init_carry = (initial_sim, )
+
+            # Run the Scan
+            (final_sim, ), cost_sequence = lax.scan(
+                mpc_scan_step, init_carry, (action_sequence, exo_sequence)
             )
             
-            # 2. Calculate Terminal Cost (Robustness) <--- CHANGED
-            # Extract the exogenous data for the *end* of the horizon to price remaining energy
+            # Calculate Terminal Cost using the final state from the rolled-out simulator
             last_exo = jax.tree.map(lambda x: x[-1], exo_sequence)
-            
             term_cost = f_terminal_cost(
-                final_state, 
-                initial_state, 
-                self.configs, 
-                last_exo
+                final_state=final_sim.state, 
+                initial_state=initial_sim.state, 
+                configs=initial_sim.configs, 
+                exo_forecast_end=last_exo
             )
             
-            # 3. Total Objective
             return jnp.sum(cost_sequence) + term_cost
 
-        # --- 5. JIT-compile the cost function ---
         self.objective_fn = f_horizon_cost
 
-        # --- 6. Setup the Optimizer ---
-        b_conf = self.battery.config
-        hp_conf = self.heat_pump.config
-        ac_conf = self.ac.config
-        ts_conf = self.storage.config
+        # --- 2. Setup the Optimizer Bounds ---
+        b_conf = simulator_template.battery.config
+        hp_conf = simulator_template.heat_pump.config
+        ac_conf = simulator_template.ac.config
+        ts_conf = simulator_template.storage.config
 
         scalar_shape = (N_horizon,)
         zonal_shape = (N_horizon, self.n_rooms)
 
-        self.action_bounds = (
-            SystemActions(
-                battery_power_w=jnp.full(scalar_shape, -b_conf.max_power_w),
-                heat_pump_power_w=jnp.full(zonal_shape, 0.0),
-                ac_power_w=jnp.full(zonal_shape, 0.0),
-                storage_discharge_w=jnp.full(zonal_shape, 0.0)
-            ),
-            SystemActions(
-                battery_power_w=jnp.full(scalar_shape, b_conf.max_power_w),
-                heat_pump_power_w=jnp.full(zonal_shape, hp_conf.max_electrical_power_w / self.n_rooms),
-                ac_power_w=jnp.full(zonal_shape, ac_conf.max_electrical_power_w / self.n_rooms),
-                storage_discharge_w=jnp.full(zonal_shape, ts_conf.max_discharge_w / self.n_rooms)
+        # Store true physical bounds for un-normalization
+        self.phys_min = SystemActions(
+            battery_power_w=jnp.full(scalar_shape, -b_conf.max_power_w),
+            heat_pump_power_w=jnp.full(zonal_shape, 0.0),
+            ac_power_w=jnp.full(zonal_shape, 0.0),
+            storage_discharge_w=jnp.full(zonal_shape, 0.0)
+        )
+        self.phys_max = SystemActions(
+            battery_power_w=jnp.full(scalar_shape, b_conf.max_power_w),
+            heat_pump_power_w=jnp.full(zonal_shape, hp_conf.max_electrical_power_w / self.n_rooms),
+            ac_power_w=jnp.full(zonal_shape, ac_conf.max_electrical_power_w / self.n_rooms),
+            storage_discharge_w=jnp.full(zonal_shape, ts_conf.max_discharge_w / self.n_rooms)
+        )
+
+        def unnormalize(norm_actions: SystemActions) -> SystemActions:
+            """Maps [0, 1] back to physical Watts."""
+            return jax.tree.map(
+                lambda n, p_min, p_max: p_min + n * (p_max - p_min),
+                norm_actions, self.phys_min, self.phys_max
             )
+
+        # Wrap the objective function so the optimizer only sees normalized [0, 1] inputs
+        @jit
+        def normalized_objective(norm_action_seq, initial_sim, exo_seq):
+            physical_actions = unnormalize(norm_action_seq)
+            return self.objective_fn(physical_actions, initial_sim, exo_seq)
+
+        # The optimizer now operates strictly inside a [0, 1] hypercube
+        self.norm_bounds = (
+            jax.tree.map(lambda x: jnp.zeros_like(x), self.phys_min),
+            jax.tree.map(lambda x: jnp.ones_like(x), self.phys_max)
         )
 
         self.optimizer = jaxopt.ProjectedGradient(
-            fun=self.objective_fn,
+            fun=normalized_objective,
             projection=jaxopt.projection.projection_box,
-            maxiter=50,
-            tol=1e-3,
+            maxiter=100,         # Give it slightly more iterations to refine
+            stepsize=0.1,        # 0.1 stepsize in normalized space is HUGE (10% of max power per step)
+            tol=1e-4,
         )
 
-        self.zonal_warm_start = jax.tree.map(
-            lambda x: jnp.zeros_like(x), self.action_bounds[0]
+        # Start warm start right in the middle (0.5 = 0 Watts for battery)
+        self.norm_warm_start = jax.tree.map(
+            lambda x: jnp.full_like(x, 0.5), self.phys_min
         )
 
     def solve(
         self,
-        current_state: SystemState,
+        current_sim: JAXSimulator,   
         exo_forecast: ExogenousData,
-        warm_start_actions: SystemActions = None
+        warm_start_norm_actions: Optional[SystemActions] = None
     ) -> SystemActions:
 
-        if warm_start_actions is None:
-            warm_start_actions = self.zonal_warm_start
+        if warm_start_norm_actions is None:
+            warm_start_norm_actions = self.norm_warm_start
 
         optim_result = self.optimizer.run(
-            init_params=warm_start_actions,
-            hyperparams_proj=self.action_bounds,
-            initial_state=current_state,
-            exo_sequence=exo_forecast
+            init_params=warm_start_norm_actions,
+            hyperparams_proj=self.norm_bounds,
+            initial_sim=current_sim,
+            exo_seq=exo_forecast
         )
 
-        optimal_action_sequence = optim_result.params
-        first_action = jax.tree.map(lambda x: x[0], optimal_action_sequence)
-
+        # Map the optimal sequence back to physical Watts before extracting the first action
+        physical_optimal_sequence = jax.tree.map(
+            lambda n, p_min, p_max: p_min + n * (p_max - p_min),
+            optim_result.params, self.phys_min, self.phys_max
+        )
+        
+        first_action = jax.tree.map(lambda x: x[0], physical_optimal_sequence)
         return first_action
