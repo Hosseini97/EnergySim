@@ -41,7 +41,7 @@ Because the framework is written in JAX/Equinox, it natively supports:
 ## Installation
 
 ```bash
-git clone https://github.com/phierhager/EnergySim.git
+git clone https://github.com/Hosseini97/EnergySim.git
 cd EnergySim
 pip install -e .
 

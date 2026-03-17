@@ -114,7 +114,7 @@ def run_mpc():
         
         # 5. Calculate Cost externally
         cost = f_cost_step(
-            state=current_sim.state,
+            state=new_sim.state,
             actions=action,
             outputs=outputs,
             exogenous=exo_current,

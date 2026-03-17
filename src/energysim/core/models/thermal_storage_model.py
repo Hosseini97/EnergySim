@@ -48,7 +48,18 @@ class StratifiedThermalStorageModel(AbstractThermalStorage):
         actual_charge_w = jnp.clip(total_charge_w, 0.0, self.config.max_charge_w)
         rejected_charge_w = total_charge_w - actual_charge_w
         
-        actual_discharge_w = jnp.clip(total_discharge_w, 0.0, self.config.max_discharge_w)
+        # Bound discharge by physically available thermal energy.
+        # In this simplified model, allow extraction above ~20C to avoid overly aggressive lockout.
+        min_useful_temp_c = 20.0
+        extractable_energy_j = jnp.sum(
+            jnp.clip(self.temperatures_c - min_useful_temp_c, 0.0, jnp.inf) * node_mass_capacity_j_k
+        )
+        max_discharge_from_energy_w = extractable_energy_j / dt_seconds
+        actual_discharge_w = jnp.clip(
+            total_discharge_w,
+            0.0,
+            jnp.minimum(self.config.max_discharge_w, max_discharge_from_energy_w)
+        )
 
         # 2. Calculate Heat Fluxes per Node (Watts)
         # Initialize flux vector
