@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*venv/
+.env
+
+# Models and Data
+*.eqx
+*.zip
+*.csv
+*.txt
