@@ -1,0 +1,84 @@
+Metadata-Version: 2.4
+Name: EnergySim
+Version: 0.0.1
+Author-email: Philip Hierhager <Philip.Hierhager@googlemail.com>
+License: Copyright 2026 Philip Hierhager
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+        
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: OS Independent
+Requires-Python: <3.13,>=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: gymnasium
+Requires-Dist: numpy
+Requires-Dist: pytest
+Requires-Dist: pandas
+Requires-Dist: jax
+Requires-Dist: jaxopt
+Requires-Dist: equinox
+Requires-Dist: flax
+Dynamic: license-file
+
+# EnergySim
+
+**EnergySim** is a JAX-native Home Energy Management System (HEMS) simulation framework designed for high-performance control optimization and reinforcement learning.
+
+By leveraging JAX, the framework provides a fully differentiable physics engine, allowing for gradient-based Model Predictive Control (MPC) and massive parallelization on GPU/TPU hardware.
+
+## Performance
+
+EnergySim is built for extreme throughput, designed to bridge the gap between high-fidelity physics and the data requirements of modern RL.
+
+* **Single Environment:** ~200,000 steps per second.
+* **Vectorized Environment (16k parallel envs):** ~200,000,000 steps per second.
+
+---
+
+## What It Is
+
+EnergySim simulates the energy dynamics of a residential building. It treats the entire house and its sub-components as a single functional computation graph.
+
+### Physics-Based Modeling
+
+The simulator includes high-fidelity, differentiable models for:
+
+* **Thermal Dynamics:** Multi-room RC-network models with dynamic infiltration and inter-zone coupling.
+* **Electrical Storage:** Battery models featuring efficiency losses and state-of-health (SOH) degradation.
+* **HVAC Systems:** Heat pumps and air conditioners with variable Coefficient of Performance (COP) based on ambient conditions and thermal lag.
+* **Thermal Storage:** Stratified water tank models (1D) and 3D finite-volume grid models.
+* **Renewables:** Geometric PV models considering panel tilt, azimuth, and temperature coefficients.
+* **Stochastic Behavior:** Models for EV charging, occupancy heat gains, and household appliances.
+
+### Control and RL Integration
+
+Because the framework is written in JAX/Equinox, it natively supports:
+
+* **Gradient-Based MPC:** Formulate and solve optimal control problems using automatic differentiation through the physics engine.
+* **Vectorized RL:** A memory-optimized `VectorizedEnergyEnv` that allows thousands of independent simulations to run in parallel on a single GPU.
+* **Differentiable Forecasting:** Forecasters with "cones of uncertainty" for testing controller robustness under noise.
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/Hosseini97/EnergySim.git
+cd EnergySim
+pip install -e .
+
+```
+
+## Examples
+
+You can find implementation examples in the `examples/` directory:
+
+* `01_run_simple_simulation.py`: Basic setup and forward simulation.
+* `02_run_mpc.py`: Solving optimal control using the JAX-native MPC solver.
+* `03_train_ppo.py`: Training a PPO agent in a vectorized environment.
