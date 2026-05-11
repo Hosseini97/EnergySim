@@ -170,7 +170,7 @@ def main():
     mean_daily_cost = -jnp.mean(total_reward_per_env) / (960 / (86400 / 900))
     
     print("-" * 40)
-    print(f"💰 Baseline RBC Daily Cost:  € 370.07")
+    print(f"💰 Baseline RBC Daily Cost:  € 27.20")
     print(f"🧠 PPO Agent Daily Cost:     € {mean_daily_cost:.2f}")
     print("-" * 40)
 

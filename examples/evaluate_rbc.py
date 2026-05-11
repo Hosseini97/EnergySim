@@ -29,15 +29,12 @@ def main():
     # 1. Initialize the Environment
     # ==========================================
     print("Loading Dataset and Physics Configs...")
-    
-    # Match the PPO Timestep exactly
     dt_seconds = 900 
     
-    # 1. Generate and Load the EXACT same dataset the PPO agent used!
-    print("Generating 10-day Sample Data...")
-    sample_data_generator.create_sample_data(n_days=10)
+    # Use the SAME master file as the PPO agent
+    dataset_path = "/home/emmanuel-gendy/Documents/ppo_jax/heeten_training_master.csv"
     dataset = SimulationDataset(
-        file_path=sample_data_generator.FILE_NAME, 
+        file_path=dataset_path, 
         dt_seconds=dt_seconds
     )
     
@@ -97,31 +94,19 @@ def main():
     vmap_controller = jax.vmap(master_rbc, in_axes=(0, None, None))
     
     # Move this OUTSIDE the function so the print statements at the bottom can use it!
-    dataset_length = len(env.shared_exo_data.price)
+    dataset_length = 960 # len(env.shared_exo_data.price)
 
     @eqx.filter_jit
     def run_full_dataset(init_state):
-        
         def step_fn(curr_state, _):
-            # 1. Extract Exogenous Data for current timestep
             t = curr_state.time_idx[0]
             exo_batch = jax.tree.map(lambda x: x[t], env.shared_exo_data)
-            
-            # 2. Get Actions from the RBC 
             actions, _ = vmap_controller(curr_state.sim.state, exo_batch, dt_seconds)
-            
-            # 3. Step the Environment
             next_state, rewards, done, info = env.step(curr_state, actions)
-            
             return next_state, rewards
         
-        final_state, all_rewards = jax.lax.scan(
-            step_fn, 
-            init_state, 
-            None, 
-            length=dataset_length
-        )
-        
+        # Ensure we only scan for 960 steps to match the PPO test
+        _, all_rewards = jax.lax.scan(step_fn, init_state, None, length=960)
         return all_rewards
 
     # ==========================================

@@ -1,0 +1,112 @@
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+
+# --- Energysim Imports ---
+from energysim.sim.simulator import JAXSimulator
+from energysim.rl.vector_env import VectorizedEnergyEnv
+from energysim.rl.helpers import extract_obs
+from energysim.core.data.dataset import SimulationDataset
+from energysim.core.shared.data_structs import (
+    BatteryConfig, RewardConfig, HeatPumpConfig, AirConditionerConfig, SystemActions
+)
+from build_my_house import create_2_room_house
+
+# 1. ARCHITECTURES
+class PPOPolicy(eqx.Module):
+    trunk: eqx.nn.MLP
+    actor_mean: eqx.nn.Linear
+    critic_head: eqx.nn.Linear
+    action_log_std: jax.Array
+    def __init__(self, obs_dim, action_dim, hidden_dim, key):
+        k1, k2, k3 = jax.random.split(key, 3)
+        self.trunk = eqx.nn.MLP(obs_dim, hidden_dim, hidden_dim, depth=2, key=k1)
+        self.actor_mean = eqx.nn.Linear(hidden_dim, action_dim, key=k2)
+        self.critic_head = eqx.nn.Linear(hidden_dim, 1, key=k3)
+        self.action_log_std = jnp.zeros(action_dim)
+    def __call__(self, obs):
+        features = jax.nn.relu(self.trunk(obs))
+        return jax.nn.tanh(self.actor_mean(features)), self.action_log_std, self.critic_head(features)[0]
+
+def map_actions(norm_actions, n_envs, n_rooms):
+    return SystemActions(
+        battery_power_w=norm_actions[:, 0] * 3000.0,
+        heat_pump_power_w=(norm_actions[:, 1:1+n_rooms] + 1.0) * 1000.0,
+        ac_power_w=jnp.zeros((n_envs, n_rooms)), storage_discharge_w=jnp.zeros((n_envs, n_rooms))
+    )
+
+def main():
+    print("--- 🏁 Starting Final Showdown with Plotting ---")
+    dt_seconds = 900
+    num_envs = 10  # Low env count for plotting clarity
+    test_steps = 96 # One full day (24 hours) for the plot
+    
+    dataset = SimulationDataset(file_path="fixed_master.csv", dt_seconds=dt_seconds)
+    t_config = create_2_room_house()
+    n_rooms = len(t_config.room_air_indices)
+    
+    sim = JAXSimulator(dt_seconds=dt_seconds, t_config=t_config, 
+                       r_config=RewardConfig(price_weight=1.0, comfort_weight=5.0))
+    env = VectorizedEnergyEnv(sim, dataset, num_envs=num_envs)
+
+    # --- RBC EVALUATION ---
+    def rbc_logic(state, n_rooms):
+        temp = state.thermal.T_vector[1] 
+        heating_on = jnp.where(temp < 20.5, 1.0, -1.0)
+        return jnp.concatenate([jnp.array([0.0]), jnp.full((n_rooms,), heating_on)])
+
+    vmap_rbc = jax.vmap(rbc_logic, in_axes=(0, None))
+
+    @eqx.filter_jit
+    def run_rbc(s):
+        def step(curr, _):
+            actions_norm = vmap_rbc(curr.sim.state, n_rooms)
+            ns, rew, _, _ = env.step(curr, map_actions(actions_norm, num_envs, n_rooms))
+            return ns, (rew, ns.sim.thermal.T_vector[:, 1])
+        return jax.lax.scan(step, s, None, length=test_steps)[1]
+
+    rbc_rewards, rbc_temps = run_rbc(env.reset(jax.random.PRNGKey(0)))
+
+    # --- PPO EVALUATION ---
+    model_path = "/home/emmanuel-gendy/Documents/ppo_jax/jax_ppo_model.eqx"
+    policy = eqx.tree_deserialise_leaves(model_path, PPOPolicy(n_rooms + 5, 1 + n_rooms, 64, jax.random.PRNGKey(0)))
+    vmap_ppo = jax.vmap(policy)
+    vmap_obs = jax.vmap(extract_obs, in_axes=(0, None, None))
+
+    @eqx.filter_jit
+    def run_ppo(s):
+        def step(curr, _):
+            exo = jax.tree.map(lambda x: x[curr.time_idx[0]], env.shared_exo_data)
+            obs = vmap_obs(curr.sim.state, exo, jnp.array(t_config.room_air_indices))
+            acts, _, _ = vmap_ppo(obs)
+            ns, rew, _, _ = env.step(curr, map_actions(acts, num_envs, n_rooms))
+            return ns, (rew, ns.sim.thermal.T_vector[:, 1])
+        return jax.lax.scan(step, s, None, length=test_steps)[1]
+
+    ppo_rewards, ppo_temps = run_ppo(env.reset(jax.random.PRNGKey(0)))
+
+    # --- PLOTTING ---
+    print("📊 Generating 24-Hour Plot...")
+    hours = jnp.arange(test_steps) * 0.25
+    prices = env.shared_exo_data.price[:test_steps]
+    
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    ax1.plot(hours, ppo_temps[:, 0], label='PPO Temp', color='blue')
+    ax1.plot(hours, rbc_temps[:, 0], label='RBC Temp', color='green', linestyle='--')
+    ax1.axhline(21.0, color='red', alpha=0.3, label='Setpoint')
+    ax1.set_ylabel("Temp (°C)")
+    ax1.legend(loc='upper left')
+
+    ax2 = ax1.twinx()
+    ax2.fill_between(hours, prices, color='orange', alpha=0.15, label='Price')
+    ax2.set_ylabel("Price (€/kWh)")
+    
+    plt.title("24-Hour Behavioral Analysis")
+    plt.savefig("showdown_plot.png")
+    print("✨ showdown_plot.png has been saved to your directory.")
+
+if __name__ == "__main__":
+    main()
