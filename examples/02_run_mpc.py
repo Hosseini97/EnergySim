@@ -7,7 +7,7 @@ import pandas as pd
 from energysim.sim.simulator import JAXSimulator
 from energysim.control.mpc_solver import JAX_MPC_Solver
 from energysim.core.data.dataset import SimulationDataset
-from energysim.utils.objectives import f_cost_step  # <--- Imported external cost function
+from energysim.utils import objectives
 from energysim.core.shared.data_structs import (
     BatteryConfig, RewardConfig, HeatPumpConfig, AirConditionerConfig, 
     ThermalStorageConfig, PVConfig, SystemActions, SystemState, ExogenousData
@@ -38,7 +38,7 @@ def run_mpc():
         pv_config=PVConfig()
     )
     
-    HORIZON = 16
+    HORIZON = 96
     # The MPC now takes the simulator directly as its perfect internal model
     mpc = JAX_MPC_Solver(N_horizon=HORIZON, simulator_template=sim)
     
@@ -113,8 +113,9 @@ def run_mpc():
         new_sim, outputs = current_sim.step(action, exo_current)
         
         # 5. Calculate Cost externally
-        cost = f_cost_step(
-            state=new_sim.state,
+        cost = objectives.f_stage_cost(
+            current_state=current_sim.state,
+            next_state=new_sim.state,
             actions=action,
             outputs=outputs,
             exogenous=exo_current,

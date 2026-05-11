@@ -30,7 +30,7 @@ def run():
         hp_config=HeatPumpConfig(model_type="ramping", max_electrical_power_w=4000.0),
         ac_config=AirConditionerConfig(model_type="ramping", max_electrical_power_w=4000.0),
         ts_config=ThermalStorageConfig(),
-        pv_config=PVConfig()
+        pv_config=PVConfig(model_type="passthrough")
     )
 
     # Reset returns the fresh simulator instance and the initial empty actions
