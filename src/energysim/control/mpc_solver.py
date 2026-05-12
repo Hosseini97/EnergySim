@@ -36,7 +36,6 @@ class JAX_MPC_Solver:
         battery_power_w < 0: discharging
 
     Important:
-        This is no longer a generic projected-gradient MPC.
         It is a dedicated battery-only QP MPC.
     """
 
