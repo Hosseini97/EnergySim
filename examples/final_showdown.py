@@ -13,7 +13,7 @@ from energysim.core.data.dataset import SimulationDataset
 from energysim.core.shared.data_structs import (
     BatteryConfig, RewardConfig, HeatPumpConfig, AirConditionerConfig, SystemActions
 )
-from build_my_house import create_2_room_house
+from rl_house import create_2_room_house
 
 # 1. ARCHITECTURES
 class PPOPolicy(eqx.Module):
@@ -32,10 +32,13 @@ class PPOPolicy(eqx.Module):
         return jax.nn.tanh(self.actor_mean(features)), self.action_log_std, self.critic_head(features)[0]
 
 def map_actions(norm_actions, n_envs, n_rooms):
+    bat_w = norm_actions[:, 0] * 3000.0 
+    hp_w = (norm_actions[:, 1:1+n_rooms] + 1.0) * 2500.0 
     return SystemActions(
-        battery_power_w=norm_actions[:, 0] * 3000.0,
-        heat_pump_power_w=(norm_actions[:, 1:1+n_rooms] + 1.0) * 1000.0,
-        ac_power_w=jnp.zeros((n_envs, n_rooms)), storage_discharge_w=jnp.zeros((n_envs, n_rooms))
+        battery_power_w=bat_w, 
+        heat_pump_power_w=hp_w,
+        ac_power_w=jnp.zeros((n_envs, n_rooms)), 
+        storage_discharge_w=jnp.zeros((n_envs, n_rooms))
     )
 
 def main():
@@ -53,11 +56,16 @@ def main():
     env = VectorizedEnergyEnv(sim, dataset, num_envs=num_envs)
 
     # --- RBC EVALUATION ---
+    print("Evaluating RBC (Bang-Bang)...")
     def rbc_logic(state, n_rooms):
+        # Move the thermometer back into the living room air (Index 1)
         temp = state.thermal.T_vector[1] 
-        heating_on = jnp.where(temp < 20.5, 1.0, -1.0)
-        return jnp.concatenate([jnp.array([0.0]), jnp.full((n_rooms,), heating_on)])
+        heating_on = jnp.where(temp < 21.5, 1.0, -1.0)
+        
+        hp_actions = jnp.full((n_rooms,), heating_on)
+        return jnp.concatenate([jnp.array([0.0]), hp_actions])
 
+    # in_axes=(0, None) tells JAX to map over states (0) but ignore n_rooms (None)
     vmap_rbc = jax.vmap(rbc_logic, in_axes=(0, None))
 
     @eqx.filter_jit
