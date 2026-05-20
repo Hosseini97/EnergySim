@@ -47,12 +47,12 @@ DUMMY_SOLAR_CONFIG = PVConfig(model_type="passthrough")
 
 # --- Factory Functions ---
 
-def create_battery(config: Optional[BatteryConfig]) -> AbstractBatteryModel:
+def create_battery(config: Optional[BatteryConfig], initial_soc: float = 0.5) -> AbstractBatteryModel:
     if config:
         if config.model_type == "simple":
-            return SimpleBatteryModel(config, initial_soc=0.5)
+            return SimpleBatteryModel(config, initial_soc=initial_soc)
         elif config.model_type == "degradation":
-            return DegradationBatteryModel(config, initial_soc=0.5, initial_soh=1.0)
+            return DegradationBatteryModel(config, initial_soc=initial_soc, initial_soh=1.0)
         else:
             raise ValueError(f"Unknown battery model_type: {config.model_type}")
     else:

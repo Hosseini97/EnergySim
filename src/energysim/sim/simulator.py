@@ -39,6 +39,7 @@ class JAXSimulator(eqx.Module):
     # --- Configs & Constants ---
     configs: Tuple
     dt_seconds: float = eqx.field(static=True)
+    initial_battery_soc: float = eqx.field(static=True)
 
     def __init__(
         self,
@@ -49,14 +50,16 @@ class JAXSimulator(eqx.Module):
         hp_config: Optional[HeatPumpConfig] = None,
         ac_config: Optional[AirConditionerConfig] = None,
         ts_config: Optional[ThermalStorageConfig] = None,
-        pv_config: Optional[PVConfig] = None
+        pv_config: Optional[PVConfig] = None,
+        initial_battery_soc: float = 0.5,
     ):
         self.dt_seconds = dt_seconds
+        self.initial_battery_soc = initial_battery_soc
 
         # 1. Create Models (Initial State is created here)
         n_rooms = len(t_config.room_air_indices)
         
-        self.battery = create_battery(b_config)
+        self.battery = create_battery(b_config, initial_soc=initial_battery_soc)
         self.thermal = create_thermal(t_config)
         self.heat_pump = create_heat_pump(hp_config, n_rooms)
         self.ac = create_ac(ac_config, n_rooms)
@@ -149,5 +152,5 @@ class JAXSimulator(eqx.Module):
         return JAXSimulator(
             self.dt_seconds, self.thermal.config, self.configs[2], # RewardConfig
             self.battery.config, self.heat_pump.config, self.ac.config,
-            self.storage.config, self.pv.config
+            self.storage.config, self.pv.config, self.initial_battery_soc
         )
