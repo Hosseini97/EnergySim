@@ -52,3 +52,34 @@ def create_2_room_house():
     builder.add_input_mapping("solar_gains_w", "wall_1", room_index=1, fraction=1.0)
 
     return builder.compile()
+
+def create_1_room_house():
+    """
+    Creates a simplified 1-room house configuration for RL baselining.
+    """
+    # 1. Initialize builder (100% of inputs go to the single room)
+    splits = ((1.0,), (1.0,), (1.0,))
+    builder = RCNetworkBuilder(n_rooms=1, splits=splits)
+
+    # 2. Add nodes (Capacities in J/K)
+    # Merged the capacities of the living room and bedroom for a whole-house equivalent
+    builder.add_node("room_air_0", capacity_j_k=8.0e6) 
+    builder.add_node("wall_0", capacity_j_k=1.8e8)
+
+    # 3. Add connections (Resistances in K/W)
+    # Lowered resistances slightly to account for larger combined surface area
+    builder.add_resistor("wall_0", "ambient", R_k_w=1.0)
+    builder.add_resistor("room_air_0", "wall_0", R_k_w=0.5)
+    builder.add_resistor("room_air_0", "ambient", R_k_w=2.0) # Ventilation
+
+    # 4. Map Inputs (HVAC & Gains)
+    builder.add_input_mapping("heating_w", "room_air_0", room_index=0)
+    builder.add_input_mapping("cooling_w", "room_air_0", room_index=0)
+    builder.add_input_mapping("occupancy_gains_w", "room_air_0", room_index=0)
+    builder.add_input_mapping("device_gains_w", "room_air_0", room_index=0)
+    
+    # Solar hits walls mostly (70%), air slightly (30%)
+    builder.add_input_mapping("solar_gains_w", "wall_0", room_index=0, fraction=0.7)
+    builder.add_input_mapping("solar_gains_w", "room_air_0", room_index=0, fraction=0.3)
+
+    return builder.compile()
