@@ -65,3 +65,8 @@ The final reward signal passed to the agent is the sum of the economic and comfo
 $$R_t = R_{cost, t} + R_{comfort, t}$$
 
 By adjusting $\lambda_{comfort}$, we can train agents with different preference profiles (e.g., an "Eco-mode" agent vs. a "Comfort-first" agent), further demonstrating the flexibility of the learned economic policy.
+
+## Phase 3: Environment Implementation
+* Created `hems_env.py` containing `HEMSMultiDeviceEnv`.
+* Inherits from `gym.Env` and strictly implements `UnifiedEnvProtocol` to maintain compatibility with the legacy AACL PyTorch training loops. 
+* Next milestone: Implement the step() physics for Battery and Heat Pump state transitions.
