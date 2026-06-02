@@ -35,3 +35,33 @@ To align with realistic hardware actuation and maintain the discrete action spac
 The AACL `Decoder` network will map the latent "economic policy" to a single flattened integer representing the combinatorial product of both device states.
 * Total Action Dimension = $Size(a_{batt}) \times Size(a_{hp})$ 
 * $5 \times 4 = \textbf{20 possible joint actions.}$
+
+
+## Phase 2: Reward Function Formulation ($R_t$)
+
+The core challenge of the multi-device HEMS is balancing economic efficiency with user comfort. Because the PPO agent seeks to *maximize* cumulative reward, costs and discomfort are formulated as negative penalties.
+
+### 1. Net Grid Energy ($E_{grid, t}$)
+First, we calculate the total energy drawn from (or fed into) the grid at time $t$. 
+$$E_{grid, t} = L_{base, t} + E_{hp}(a_{hp, t}) + E_{batt}(a_{batt, t}) - E_{pv}(G_t)$$
+* $L_{base, t}$: Base uncontrollable load.
+* $E_{hp}$: Energy consumed by the heat pump based on its current action.
+* $E_{batt}$: Energy charged (positive) or discharged (negative) by the battery.
+* $E_{pv}$: Solar generation based on irradiance $G_t$.
+
+### 2. Economic Cost Component ($R_{cost, t}$)
+The economic penalty is the net energy multiplied by the dynamic electricity price $P_t$.
+$$R_{cost, t} = - (E_{grid, t} \times P_t)$$
+*(Note: If $E_{grid, t}$ is negative, the agent is selling power back to the grid, resulting in a positive economic reward).*
+
+### 3. Thermal Comfort Penalty ($R_{comfort, t}$)
+To prevent the agent from freezing the house to save money, we apply a penalty based on the squared deviation from a target temperature ($T_{target}$).
+$$R_{comfort, t} = - \lambda_{comfort} \times (T_{in, t} - T_{target})^2$$
+* $\lambda_{comfort}$: A hyperparameter weight that scales the importance of comfort relative to cost.
+* Squaring the error ensures that small deviations (e.g., $0.5^\circ\text{C}$) are lightly penalized, but large deviations (e.g., $3^\circ\text{C}$) are heavily punished.
+
+### 4. Total Reward ($R_t$)
+The final reward signal passed to the agent is the sum of the economic and comfort components:
+$$R_t = R_{cost, t} + R_{comfort, t}$$
+
+By adjusting $\lambda_{comfort}$, we can train agents with different preference profiles (e.g., an "Eco-mode" agent vs. a "Comfort-first" agent), further demonstrating the flexibility of the learned economic policy.
