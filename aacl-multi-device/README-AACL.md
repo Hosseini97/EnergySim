@@ -70,3 +70,12 @@ By adjusting $\lambda_{comfort}$, we can train agents with different preference 
 * Created `hems_env.py` containing `HEMSMultiDeviceEnv`.
 * Inherits from `gym.Env` and strictly implements `UnifiedEnvProtocol` to maintain compatibility with the legacy AACL PyTorch training loops. 
 * Next milestone: Implement the step() physics for Battery and Heat Pump state transitions.
+
+## Phase 4: Physics and Step Implementation
+The `step()` function evaluates the 20-dimensional joint action space, calculating physical state transitions and the associated rewards.
+
+**Key Mathematical Models Introduced:**
+1. **Action Decoding:** The combinatorial integer action $a \in [0, 19]$ is factored using modular arithmetic ($a_{batt} = a \text{ // } 4$, $a_{hp} = a \text{ \% } 4$) to derive specific wattage commands.
+2. **Boundary Enforcement:** The battery simulation explicitly caps charging and discharging logic to ensure $SoC \in [0.0, 1.0]$, preventing non-physical states.
+3. **Dynamic Efficiency (COP):** The heat pump's Coefficient of Performance is modeled as a function of the external temperature ($T_{out}$). This ensures that heating the house during cold nights is realistically more energy-intensive than during warmer periods.
+4. **Thermal Leakage Model:** Indoor temperature updates use a first-order thermal mass approximation: $T_{new} = T_{old} - \alpha(T_{old} - T_{out}) + \beta(Q_{heat})$, where $\alpha$ represents building insulation quality.
