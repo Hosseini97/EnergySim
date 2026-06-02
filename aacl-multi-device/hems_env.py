@@ -8,14 +8,12 @@ from typing import List, Tuple, Any
 @dataclass
 class HEMSConfig:
     """Configuration for the real-world dataset environment."""
-    max_steps: int = 24  # 24-hour daily cycle
+    max_steps: int = 96  # 24-hour daily cycle
     target_temp_c: float = 22.0
     lambda_comfort: float = 2.0
     battery_capacity_kwh: float = 13.5 # Standard residential battery size
-    
-    # Placeholders for the real data we will hook up later
-    weather_data_path: str = "data/weather.csv"
-    pricing_data_path: str = "data/pricing.csv"
+    data_path: str = "data/sample_data_with_weather.csv" # Path to your final CSV
+
 
 class HEMSMultiDeviceEnv(gym.Env):
     """
@@ -26,18 +24,13 @@ class HEMSMultiDeviceEnv(gym.Env):
         self.config = config
         self.device = device
         
-        # Phase 1 Implementation: 7-Dimensional State Space
-        # [Hour, Price, Temp_out, Irradiance, SoC, Temp_in, Base_Load]
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
-        )
+        # Load the real dataset
+        self.data_loader = RealWorldDataLoader(config.data_path, config.max_steps)
+        self.current_episode_data = None
         
-        # Phase 1 Implementation: 20 Joint Actions (5 battery * 4 heat pump)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32)
         self.action_space = spaces.Discrete(20)
-        
-        # Required by CustomEnvProtocol
         self.allowed_actions = list(range(20))
-        
         self.current_step = 0
         self.state = np.zeros(7, dtype=np.float32)
 
@@ -53,9 +46,18 @@ class HEMSMultiDeviceEnv(gym.Env):
         super().reset(seed=seed)
         self.current_step = 0
         
-        # Initialize with dummy values until we hook up the CSV dataset
-        # [Hour=0, Price=0.15, T_out=15.0, Irr=0.0, SoC=0.5, T_in=20.0, Load=1.0]
-        self.state = np.array([0.0, 0.15, 15.0, 0.0, 0.5, 20.0, 1.0], dtype=np.float32)
+        # Fetch a new random 24-hour period for this episode
+        self.current_episode_data = self.data_loader.sample_episode()
+        
+        # Initial state setup
+        hour = self.current_episode_data['hour'][0]
+        price = self.current_episode_data['price'][0]
+        t_out = self.current_episode_data['t_out'][0]
+        irr = self.current_episode_data['irr'][0]
+        load = self.current_episode_data['load'][0]
+        
+        # Start at 50% SoC and Target Temperature
+        self.state = np.array([hour, price, t_out, irr, 0.5, self.config.target_temp_c, load], dtype=np.float32)
         return self.state, {}
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
@@ -75,17 +77,18 @@ class HEMSMultiDeviceEnv(gym.Env):
         
         # A. Battery Dynamics (Assuming 1 step = 1 hour, so kW == kWh)
         # We must prevent the agent from overcharging or over-discharging
-        energy_req = batt_action_kw 
-        actual_batt_kw = energy_req
+        dt_hours = 0.25 
+        energy_req_kwh = batt_action_kw * dt_hours
         
-        if energy_req > 0: # Charging
-            max_charge = (1.0 - soc) * self.config.battery_capacity_kwh
-            actual_batt_kw = min(energy_req, max_charge)
-        elif energy_req < 0: # Discharging
-            max_discharge = soc * self.config.battery_capacity_kwh
-            actual_batt_kw = -min(abs(energy_req), max_discharge)
+        if energy_req_kwh > 0: # Charging
+            max_charge_kwh = (1.0 - soc) * self.config.battery_capacity_kwh
+            actual_batt_kwh = min(energy_req_kwh, max_charge_kwh)
+        elif energy_req_kwh < 0: # Discharging
+            max_discharge_kwh = soc * self.config.battery_capacity_kwh
+            actual_batt_kwh = -min(abs(energy_req_kwh), max_discharge_kwh)
             
-        new_soc = soc + (actual_batt_kw / self.config.battery_capacity_kwh)
+        new_soc = soc + (actual_batt_kwh / self.config.battery_capacity_kwh)
+        actual_batt_kw = actual_batt_kwh / dt_hours
         
         # B. Heat Pump & Thermal Dynamics
         # Coefficient of Performance (COP) drops as outdoor temperature drops
@@ -100,7 +103,7 @@ class HEMSMultiDeviceEnv(gym.Env):
         
         # C. Solar PV Generation
         # Simple approximation: 1000 W/m2 irradiance yields max 5kW solar output
-        pv_kw = (irr / 1000.0) * 5.0 
+        pv_kw = self.current_episode_data['pv'][self.current_step]
         
         # --- 3. REWARD CALCULATION ---
         
@@ -114,9 +117,20 @@ class HEMSMultiDeviceEnv(gym.Env):
         # Total Reward
         reward = r_cost + r_comfort
         
-        # --- 4. STATE UPDATE ---
         self.current_step += 1
-        new_hour = (hour + 1) % 24
+        terminated = self.current_step >= self.config.max_steps
+        truncated = False
+        
+        if not terminated:
+            new_hour = self.current_episode_data['hour'][self.current_step]
+            new_price = self.current_episode_data['price'][self.current_step]
+            new_t_out = self.current_episode_data['t_out'][self.current_step]
+            new_irr = self.current_episode_data['irr'][self.current_step]
+            new_base_load = self.current_episode_data['load'][self.current_step]
+            
+            self.state = np.array([
+                new_hour, new_price, new_t_out, new_irr, new_soc, new_t_in, new_base_load
+            ], dtype=np.float32)
         
         # TODO in Phase 5: Fetch next step values from real-world datasets
         # For now, keep weather/price static to ensure the code runs

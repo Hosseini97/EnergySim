@@ -79,3 +79,12 @@ The `step()` function evaluates the 20-dimensional joint action space, calculati
 2. **Boundary Enforcement:** The battery simulation explicitly caps charging and discharging logic to ensure $SoC \in [0.0, 1.0]$, preventing non-physical states.
 3. **Dynamic Efficiency (COP):** The heat pump's Coefficient of Performance is modeled as a function of the external temperature ($T_{out}$). This ensures that heating the house during cold nights is realistically more energy-intensive than during warmer periods.
 4. **Thermal Leakage Model:** Indoor temperature updates use a first-order thermal mass approximation: $T_{new} = T_{old} - \alpha(T_{old} - T_{out}) + \beta(Q_{heat})$, where $\alpha$ represents building insulation quality.
+
+## Phase 5: Real-World Dataset Integration
+To address Reviewer A and Reviewer B's concerns regarding synthetic/periodic data, the environment has been upgraded to ingest historical datasets.
+
+* **Load and PV Generation:** Integrated the Heeten building dataset to provide highly stochastic residential base load and solar generation profiles.
+* **Weather Data:** Utilized the Open-Meteo Archive API to fetch historical ambient temperature and direct radiation, perfectly synchronized with the electrical data timestamps.
+* **Pricing:** Integrated dynamic wholesale electricity pricing.
+* **Temporal Resolution:** The environment operates on a 15-minute timestep resolution ($dt = 0.25$ hours). The state transition physics (specifically battery state of charge equations) have been modified to calculate energy delta as $E_{kWh} = P_{kW} \times 0.25$.
+* **Episode Sampling:** Implemented `RealWorldDataLoader` to randomly sample 24-hour trajectories during RL training, exposing the agent to diverse weather patterns and varying grid conditions.
