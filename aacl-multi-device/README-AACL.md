@@ -88,3 +88,13 @@ To address Reviewer A and Reviewer B's concerns regarding synthetic/periodic dat
 * **Pricing:** Integrated dynamic wholesale electricity pricing.
 * **Temporal Resolution:** The environment operates on a 15-minute timestep resolution ($dt = 0.25$ hours). The state transition physics (specifically battery state of charge equations) have been modified to calculate energy delta as $E_{kWh} = P_{kW} \times 0.25$.
 * **Episode Sampling:** Implemented `RealWorldDataLoader` to randomly sample 24-hour trajectories during RL training, exposing the agent to diverse weather patterns and varying grid conditions.
+
+## Phase 6: Baseline Benchmarking
+To establish a performance floor, the `PPOBaselineAgent` (training from scratch without AACL knowledge transfer) was deployed in the newly integrated `HEMSMultiDeviceEnv`.
+
+**Training Configuration:**
+* **Observation Space:** 7-dimensional real-world vectors.
+* **Action Space:** 20-dimensional discrete joint actions.
+* **Metrics Tracked:** Policy loss, value loss, entropy, and cumulative reward (balancing $R_{cost}$ and $R_{comfort}$).
+
+This baseline proves the viability of the multi-device MDP. The next stage will evaluate the AACL hierarchical architecture's ability to transfer the learned economic policy across different hardware topologies (e.g., masking out specific heat pump capacities to simulate deployment in a different house).
