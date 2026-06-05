@@ -98,3 +98,11 @@ To establish a performance floor, the `PPOBaselineAgent` (training from scratch 
 * **Metrics Tracked:** Policy loss, value loss, entropy, and cumulative reward (balancing $R_{cost}$ and $R_{comfort}$).
 
 This baseline proves the viability of the multi-device MDP. The next stage will evaluate the AACL hierarchical architecture's ability to transfer the learned economic policy across different hardware topologies (e.g., masking out specific heat pump capacities to simulate deployment in a different house).
+
+## Phase 7: Continual Learning Framework & Task Design
+To evaluate the transferability of the latent economic policy, the environment simulates a hardware topology shift between two households:
+
+* **Task 0 (Source Domain):** Full hardware capabilities. The agent has access to all 20 combinatorial actions, including extreme battery charging/discharging rates ($\pm 7.0 \text{kW}$).
+* **Task 1 (Target Domain):** Hardware restriction. Simulating a smaller inverter capacity, the extreme battery states are masked, restricting the action space to 12 valid combinations. 
+
+The evaluation metrics will compare how rapidly the AACL architecture recovers its optimal economic policy in Task 1 compared to standard baselines (like PPO from scratch or naive action masking).
