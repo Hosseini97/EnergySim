@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from dataclasses import dataclass
 from typing import List, Tuple, Any
+from data_loader import RealWorldDataLoader
+import matplotlib.pyplot as plt
 
 @dataclass
 class HEMSConfig:
@@ -40,7 +42,7 @@ class HEMSMultiDeviceEnv(gym.Env):
 
     def get_state_tensor(self, state: np.ndarray) -> torch.Tensor:
         """Converts observation to tensor for the PyTorch agents."""
-        return torch.tensor(state, dtype=torch.float32, device=self.device)
+        return torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
 
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> Tuple[np.ndarray, dict]:
         super().reset(seed=seed)
@@ -75,10 +77,12 @@ class HEMSMultiDeviceEnv(gym.Env):
         
         # --- 2. PHYSICS SIMULATION ---
         
-        # A. Battery Dynamics (Assuming 1 step = 1 hour, so kW == kWh)
-        # We must prevent the agent from overcharging or over-discharging
+        # A. Battery Dynamics
         dt_hours = 0.25 
         energy_req_kwh = batt_action_kw * dt_hours
+        
+        # ADD THIS LINE: Default to the requested energy (which handles the 0.0 case)
+        actual_batt_kwh = energy_req_kwh 
         
         if energy_req_kwh > 0: # Charging
             max_charge_kwh = (1.0 - soc) * self.config.battery_capacity_kwh
@@ -88,7 +92,7 @@ class HEMSMultiDeviceEnv(gym.Env):
             actual_batt_kwh = -min(abs(energy_req_kwh), max_discharge_kwh)
             
         new_soc = soc + (actual_batt_kwh / self.config.battery_capacity_kwh)
-        actual_batt_kw = actual_batt_kwh / dt_hours
+        actual_batt_kw = actual_batt_kwh / dt_hours # Convert back to power for grid calculation
         
         # B. Heat Pump & Thermal Dynamics
         # Coefficient of Performance (COP) drops as outdoor temperature drops
@@ -117,6 +121,7 @@ class HEMSMultiDeviceEnv(gym.Env):
         # Total Reward
         reward = r_cost + r_comfort
         
+        # --- 4. STATE UPDATE ---
         self.current_step += 1
         terminated = self.current_step >= self.config.max_steps
         truncated = False
@@ -127,21 +132,18 @@ class HEMSMultiDeviceEnv(gym.Env):
             new_t_out = self.current_episode_data['t_out'][self.current_step]
             new_irr = self.current_episode_data['irr'][self.current_step]
             new_base_load = self.current_episode_data['load'][self.current_step]
+        else:
+            # The episode is over. Re-use the current external conditions 
+            # for the final state observation to avoid an IndexError.
+            new_hour = hour
+            new_price = price
+            new_t_out = t_out
+            new_irr = irr
+            new_base_load = base_load
             
-            self.state = np.array([
-                new_hour, new_price, new_t_out, new_irr, new_soc, new_t_in, new_base_load
-            ], dtype=np.float32)
-        
-        # TODO in Phase 5: Fetch next step values from real-world datasets
-        # For now, keep weather/price static to ensure the code runs
-        new_price, new_t_out, new_irr, new_base_load = price, t_out, irr, base_load
-        
         self.state = np.array([
             new_hour, new_price, new_t_out, new_irr, new_soc, new_t_in, new_base_load
         ], dtype=np.float32)
-        
-        terminated = self.current_step >= self.config.max_steps
-        truncated = False
         
         # Return info dict for tracking and debugging in aim/tensorboard
         info = {
@@ -163,4 +165,7 @@ class HEMSMultiDeviceEnv(gym.Env):
         pass
         
     def get_agent_value_function_plot(self, value_net: torch.nn.Module) -> Any: 
-        pass
+        # Return a blank figure so the logger doesn't crash
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "2D Plot not applicable for 7D State", ha='center')
+        return fig, ax

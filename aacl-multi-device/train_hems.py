@@ -5,7 +5,7 @@ from aim import Run
 # Import your existing agent and configs
 from aacl.agents.baseline_agents import PPOBaselineAgent
 # (Adjust this import path if your configs are located elsewhere)
-from aacl.configs.agent_configs import BaseAgentConfig, ConfigManager 
+from aacl.configs.agent_configs import BaseAgentConfig
 
 # Import the new environment we just built
 from hems_env import HEMSMultiDeviceEnv, HEMSConfig
@@ -29,12 +29,12 @@ def main():
     # 4. Load the PPO Configuration
     # Assuming you have a default way to load configs in your repo. 
     # You may need to replace this with your actual config loading method.
-    try:
-        agent_config = ConfigManager.get_default_base_config()
-    except AttributeError:
-        # Fallback if ConfigManager is different in your local repo
-        print("Warning: Using blank BaseAgentConfig, adjust if necessary.")
-        agent_config = BaseAgentConfig()
+    print("⚙️ Initializing default BaseAgentConfig...")
+    agent_config = BaseAgentConfig()
+    
+    # We need to manually set the RL loop learning rate since the 
+    # optimizer in baseline_agents.py specifically looks for it
+    agent_config.rl_loop.rl_lr = 3e-4
 
     # 5. Instantiate the Baseline Agent
     # State_dim = 7, Action_dim = 20 (Joint Action Space)
@@ -48,19 +48,11 @@ def main():
 
     # 6. Run the Training Loop
     print("📈 Starting RL Training Stage...")
+    
+    # We let the agent's internal config dictate the 500 episodes
     global_step = 0
-    
-    # We will train for 500 episodes/iterations as a quick smoke test
-    num_episodes = 500 
-    
-    for episode in range(num_episodes):
-        # train_rl_stage handles the rollout collection and PPO update internally
-        rl_buffer, global_step = agent.train_rl_stage(global_step=global_step)
-        
-        if episode % 10 == 0:
-            print(f"✅ Completed Episode {episode}/{num_episodes} | Global Step: {global_step}")
+    rl_buffer, global_step = agent.train_rl_stage(global_step=global_step)
 
     print("🎉 Training Complete! Check your Aim UI for the loss and reward curves.")
-
 if __name__ == "__main__":
     main()

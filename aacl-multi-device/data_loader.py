@@ -13,13 +13,13 @@ class RealWorldDataLoader:
         
         # Extract features as numpy arrays for fast slicing during training
         # Adjust column names if your final CSV differs slightly
-        self.price = self.df['germany'].values # Assuming EUR/kWh
+        self.price = self.df['price'].values # Assuming EUR/kWh
         self.t_out = self.df['ambient_temperature'].values
         self.irr = self.df['solar_irradiance'].values
         
         # sample_data_generator.py converted load/pv to Watts. Convert back to kW.
         self.load_kw = self.df['load'].values / 1000.0
-        self.pv_kw = self.df['pv'].values / 1000.0
+        self.pv_kw = self.df['solar_gains_w'].values / 1000.0
         
         # Parse hour of day from timestamp
         self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
