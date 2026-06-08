@@ -106,3 +106,10 @@ To evaluate the transferability of the latent economic policy, the environment s
 * **Task 1 (Target Domain):** Hardware restriction. Simulating a smaller inverter capacity, the extreme battery states are masked, restricting the action space to 12 valid combinations. 
 
 The evaluation metrics will compare how rapidly the AACL architecture recovers its optimal economic policy in Task 1 compared to standard baselines (like PPO from scratch or naive action masking).
+
+## Phase 8: Baseline Evaluation Strategy
+To rigorously prove the efficacy of the transfer learning framework, a control baseline was established:
+1. **Experimental Group (AACL Transfer):** An agent is trained on Task 0 (House A) and subsequently transferred to Task 1 (House B) using the AACL masking strategy.
+2. **Control Group (Standard PPO):** A standard PPO agent, initialized with random weights, is trained directly on Task 1 (House B).
+
+**Hypothesis:** The AACL agent will exhibit a significantly higher initial reward (zero-shot transfer) and faster convergence on Task 1 compared to the Control Group, demonstrating the successful extraction and transfer of a hardware-agnostic economic policy.

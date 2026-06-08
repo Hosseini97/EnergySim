@@ -7,6 +7,8 @@ from aacl.agents.mask_agents import MaskModulationAgent
 from aacl.configs.agent_configs import MaskAgentConfig
 from hems_env import HEMSMultiDeviceEnv, HEMSConfig
 
+from aacl.agents.baseline_agents import PPOBaselineAgent
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🚀 Starting Transfer Learning Experiment on: {device}")
@@ -61,6 +63,33 @@ def main():
         rl_buffer, global_step = agent.train_rl_stage(global_step=global_step)
         
         print(f"✅ Finished training on {task['name']}.")
+
+        # ==========================================================
+        # 6. RUN THE CONTROL GROUP (PPO FROM SCRATCH ON HOUSE B)
+        # ==========================================================
+        print(f"\n{'='*50}")
+        print(f"🔬 Starting Control Baseline: PPO from scratch on House B")
+        print(f"{'='*50}")
+        
+        # Re-initialize the environment for Task 1 (House B)
+        env.set_action_space(task_1_actions)
+        aim_run_baseline = Run(experiment="Phase8_Control_PPO_Scratch")
+        
+        # We must remap the 12 specific actions to a generic 0-11 discrete space 
+        # for the standard PPO agent, because standard PPO cannot handle "masked" gaps.
+        baseline_agent = PPOBaselineAgent(
+            env=env,
+            state_dim=7,
+            action_dim=20, # len(task_1_actions), # Just 12 actions
+            config=config, # Re-use the same base config
+            aim_run=aim_run_baseline
+        )
+        
+        # Train the baseline for 500 episodes
+        baseline_global_step = 0
+        baseline_agent.train_rl_stage(global_step=baseline_global_step)
+        
+        print("✅ Finished Control Baseline.")
 
 if __name__ == "__main__":
     main()
