@@ -75,7 +75,11 @@ class RCNetworkModel(AbstractThermalModel):
     @eqx.filter_jit
     def step(self, heating_w: Array, cooling_w: Array, waste_heat_w: float, exogenous: ExogenousData, dt_seconds: float) -> 'RCNetworkModel':
 
-        T_k = self.T_vector
+        # Pin ambient before evaluating any derivative. The node still held the
+        # *previous* step's ambient temperature, so k1 mixed a stale conduction
+        # driving force with the current exogenous.ambient_temp used by the
+        # infiltration term -- two different ambients inside one derivative.
+        T_k = self.T_vector.at[self.config.ambient_air_index].set(exogenous.ambient_temp)
 
         # Helper to compute the full dT/dt vector
         def get_derivative(T_state):

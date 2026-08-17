@@ -1,3 +1,5 @@
+import warnings
+
 import jax.numpy as jnp
 import numpy as np
 from dataclasses import dataclass, field
@@ -84,6 +86,71 @@ class RCNetworkBuilder:
         base_offset = self._input_keys_order.index(key) * self.n_rooms
         return base_offset + room_idx
 
+    # A building's slowest lump settles in hours to a few days. Anything past
+    # this means the loss paths are too weak to balance the gains on any horizon
+    # a simulation actually runs for, so temperature just ramps.
+    MAX_PLAUSIBLE_TIME_CONSTANT_S = 14 * 86400.0
+
+    def _validate_losses(self, node_order, A_matrix, c_inv_vector):
+        """Catch envelopes that cannot shed the heat pushed into them.
+
+        Solar and internal gains are strictly non-negative, so they only ever
+        add energy. If a node cannot reach ambient, or can only reach it through
+        a conductance that is orders of magnitude too small, the network stays
+        formally stable but converges to a nonsense fixed point over a horizon
+        far longer than the simulation -- which reads as unbounded drift.
+        """
+        amb_idx = self._nodes["ambient"].index
+
+        # 1. Reachability: every capacitive node needs a path to ambient.
+        adjacency = {name: set() for name in node_order}
+        for res in self._resistors:
+            adjacency[res.node_a_name].add(res.node_b_name)
+            adjacency[res.node_b_name].add(res.node_a_name)
+        if self._infiltration_enabled:
+            # Infiltration is an air<->ambient path that never enters A_matrix.
+            for name in node_order:
+                if name.startswith("room_air_"):
+                    adjacency[name].add("ambient")
+                    adjacency["ambient"].add(name)
+
+        seen, stack = {"ambient"}, ["ambient"]
+        while stack:
+            for nb in adjacency[stack.pop()]:
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        orphans = [n for n in node_order if n not in seen]
+        if orphans:
+            raise ValueError(
+                f"Nodes {orphans} have no conductance path to 'ambient'. Any gain "
+                "mapped onto them accumulates forever. Add a resistor to ambient "
+                "(directly or via a wall), or call set_infiltration()."
+            )
+
+        # 2. Magnitude: total UA to ambient vs. total capacitance.
+        ua_to_ambient = float(-A_matrix[amb_idx, amb_idx])
+        if self._infiltration_enabled:
+            ua_to_ambient += (self._inf_params[0] * self._total_volume * 1200.0) / 3600.0
+
+        total_capacity = float(sum(
+            1.0 / c for c in c_inv_vector if c > 0.0
+        ))
+        if ua_to_ambient <= 0.0:
+            raise ValueError("Network has zero total conductance to 'ambient'.")
+
+        tau_s = total_capacity / ua_to_ambient
+        if tau_s > self.MAX_PLAUSIBLE_TIME_CONSTANT_S:
+            warnings.warn(
+                f"Thermal network has UA={ua_to_ambient:.2f} W/K to ambient against "
+                f"C={total_capacity:.3g} J/K, a global time constant of "
+                f"{tau_s / 86400:.0f} days. Indoor temperature will ramp rather than "
+                "settle under steady gains. Resistances passed to add_resistor() are "
+                "absolute K/W, not area-normalised R-values (m2K/W) -- divide the "
+                "R-value by the area it acts over.",
+                stacklevel=3,
+            )
+
     def compile(self) -> ThermalConfig:
         # Node ordering
         node_names = sorted([n for n in self._nodes if n != "ambient"])
@@ -151,6 +218,7 @@ class RCNetworkBuilder:
 
         B_matrix_final = B_matrix @ split_matrix
 
+        self._validate_losses(final_node_order, A_matrix, c_inv_vector)
 
         return ThermalConfig(
             A_matrix=jnp.array(A_matrix),
