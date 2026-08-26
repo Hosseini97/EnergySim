@@ -62,7 +62,22 @@ class BatteryConfig(eqx.Module):
 
 class RewardConfig(eqx.Module):
     price_weight: float = eqx.field(static=True, default=1.0)
-    comfort_weight: float = eqx.field(static=True, default=5.0)
+
+    # Price of thermal discomfort, in EUR per (degC^2 . hour) outside the comfort
+    # band. Applied by f_stage_cost as w * sum_zones max(0, |T_z - setpoint| - band)^2.
+    #
+    # Defaults to 0.0 -- OFF. It was previously 5.0 and read nowhere, so no result
+    # ever depended on it; 0.0 makes that explicit and keeps wiring it in a no-op
+    # for existing callers. A nonzero value is an opt-in.
+    #
+    # Calibrate it, do not guess it. Measure what the heat pump charges to buy a
+    # degree-hour of comfort back in your building, then set this to a multiple of
+    # that break-even. For the 2-zone house in hems_research on real Heeten
+    # weather, break-even is ~2.8e-4 and 10x that (2.79e-3) makes comfort dominant
+    # while leaving price visible in the TIMING of heating -- which is the point.
+    # A value of 50.0 is roughly 180,000x break-even: that is not a comfort term,
+    # it is an instruction to ignore electricity prices.
+    comfort_weight: float = eqx.field(static=True, default=0.0)
 
     # --- Retail tariff ---
     # A household does not buy and sell at the same price. It pays the wholesale

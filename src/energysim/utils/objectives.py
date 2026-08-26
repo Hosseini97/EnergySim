@@ -175,14 +175,24 @@ def f_stage_cost(
     dt_seconds: float,
 ) -> Array:
     """
-    Stage electricity bill used for reporting the hard-constrained MPC path.
+    Stage electricity bill, plus an optional thermal-comfort penalty.
 
     The QP enforces battery feasibility, so this cost uses the returned battery
     action directly without a second feasibility repair.
-    """
-    del current_state, next_state
 
-    _, _, r_conf, _, _, _, _ = configs
+    Comfort is a DEAD-BAND penalty: zero anywhere inside
+    [setpoint - comfort_band, setpoint + comfort_band], quadratic outside it. The
+    band is not slack to be tidied away -- it IS the flexibility a HEMS trades on.
+    A bare setpoint penalises every deviation, which leaves an agent no room to
+    shift heating in time and so nothing to learn.
+
+    It is off by default (comfort_weight = 0.0) so this function is unchanged for
+    every existing caller. See RewardConfig.comfort_weight for the units and for
+    how to pick a value that is not a guess.
+    """
+    del current_state
+
+    t_conf, _, r_conf, _, _, _, _ = configs
 
     uncontrollable_load_w = (
         exogenous.base_load_w
@@ -222,8 +232,20 @@ def f_stage_cost(
 
     buy_cost = import_w * import_price
     sell_revenue = export_w * export_price
+    electricity_eur = (buy_cost - sell_revenue) * energy_factor_kwh_per_w
 
-    return (buy_cost - sell_revenue) * energy_factor_kwh_per_w * r_conf.price_weight
+    # Comfort is charged on the temperature the action PRODUCED, not the one it
+    # started from, so the penalty is attributable to the action taken.
+    room_temps = next_state.thermal.T_vector[jnp.array(t_conf.room_air_indices)]
+    excursion_c = jnp.maximum(
+        0.0, jnp.abs(room_temps - t_conf.setpoint) - t_conf.comfort_band
+    )
+    hours = dt_seconds / 3600.0
+    comfort_eur = r_conf.comfort_weight * jnp.sum(excursion_c ** 2) * hours
+
+    # Both terms are scaled by price_weight together, so comfort_weight stays a
+    # pure EUR/(degC^2.h) exchange rate and does not silently absorb the scaling.
+    return (electricity_eur + comfort_eur) * r_conf.price_weight
 
 
 @jit
