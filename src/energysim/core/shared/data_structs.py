@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import equinox as eqx
 from dataclasses import field
-from typing import Literal, Tuple
+from typing import Literal, Optional, Tuple
 
 # Define array type for clarity
 Array = jnp.ndarray
@@ -63,6 +63,18 @@ class BatteryConfig(eqx.Module):
 class RewardConfig(eqx.Module):
     price_weight: float = eqx.field(static=True, default=1.0)
     comfort_weight: float = eqx.field(static=True, default=5.0)
+
+    # --- Retail tariff ---
+    # A household does not buy and sell at the same price. It pays the wholesale
+    # price plus tax and grid fees to import, and receives a much lower feed-in
+    # rate to export. That asymmetry is what makes storing your own generation
+    # worth anything; billing both directions at wholesale removes it.
+    #
+    # Defaults reproduce the old behaviour exactly: no markup on import, and
+    # export paid at EXPORT_PRICE_FRACTION of the wholesale price.
+    import_tax_rate: float = eqx.field(static=True, default=0.0)
+    import_grid_fee_eur_per_kwh: float = eqx.field(static=True, default=0.0)
+    export_price_eur_per_kwh: Optional[float] = eqx.field(static=True, default=None)
 
 
 class AirConditionerConfig(eqx.Module):

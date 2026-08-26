@@ -48,8 +48,10 @@ class BatteryQPStaticData(NamedTuple):
     row_soc: Array
     capacity_wh: Array
     max_power_w: Array
-    energy_price_scale: Array
-    export_energy_price_scale: Array
+    import_price_scale: Array
+    import_fee_offset: Array
+    export_price_scale: Array
+    export_price_offset: Array
     terminal_linear_scale: Array
     terminal_soc_target: Array
 
@@ -207,8 +209,19 @@ def f_stage_cost(
     export_w = jnp.maximum(-net_grid_w, 0.0)
     energy_factor_kwh_per_w = dt_seconds / 3600000.0
 
-    buy_cost = import_w * exogenous.price
-    sell_revenue = export_w * EXPORT_PRICE_FRACTION * exogenous.price
+    # Import and export are priced separately -- see RewardConfig. The defaults
+    # leave this identical to billing both directions at the wholesale price.
+    import_price = (
+        exogenous.price * (1.0 + r_conf.import_tax_rate)
+        + r_conf.import_grid_fee_eur_per_kwh
+    )
+    if r_conf.export_price_eur_per_kwh is None:
+        export_price = EXPORT_PRICE_FRACTION * exogenous.price
+    else:
+        export_price = r_conf.export_price_eur_per_kwh
+
+    buy_cost = import_w * import_price
+    sell_revenue = export_w * export_price
 
     return (buy_cost - sell_revenue) * energy_factor_kwh_per_w * r_conf.price_weight
 
@@ -362,6 +375,33 @@ def build_battery_qp_static_data(
 
     energy_factor_kwh_per_w = dt_seconds / 3600000.0
 
+    # Import and export are priced separately, matching f_stage_cost exactly
+    # -- see RewardConfig. Import cost is an AFFINE function of wholesale
+    # price (retail markup + a flat grid fee), so it splits into a
+    # price-proportional scale and a constant per-step offset. Export is
+    # either a flat feed-in rate (export_price_eur_per_kwh set) -- a pure
+    # offset, no price dependence -- or, if unset, the legacy behaviour of a
+    # fixed fraction of wholesale price, which is why export also carries a
+    # price-proportional scale term even though only one of the two paths is
+    # ever nonzero.
+    price_weight = r_conf.price_weight
+    import_price_scale = jnp.asarray(
+        (1.0 + r_conf.import_tax_rate) * energy_factor_kwh_per_w * price_weight
+    )
+    import_fee_offset = jnp.asarray(
+        r_conf.import_grid_fee_eur_per_kwh * energy_factor_kwh_per_w * price_weight
+    )
+    if r_conf.export_price_eur_per_kwh is None:
+        export_price_scale = jnp.asarray(
+            export_price_fraction * energy_factor_kwh_per_w * price_weight
+        )
+        export_price_offset = jnp.asarray(0.0)
+    else:
+        export_price_scale = jnp.asarray(0.0)
+        export_price_offset = jnp.asarray(
+            r_conf.export_price_eur_per_kwh * energy_factor_kwh_per_w * price_weight
+        )
+
     return BatteryQPStaticData(
         Q=Q,
         A=A,
@@ -376,12 +416,10 @@ def build_battery_qp_static_data(
         row_soc=row_soc,
         capacity_wh=jnp.asarray(b_conf.capacity_kwh * 1000.0),
         max_power_w=jnp.asarray(b_conf.max_power_w),
-        energy_price_scale=jnp.asarray(
-            energy_factor_kwh_per_w * r_conf.price_weight
-        ),
-        export_energy_price_scale=jnp.asarray(
-            export_price_fraction * energy_factor_kwh_per_w * r_conf.price_weight
-        ),
+        import_price_scale=import_price_scale,
+        import_fee_offset=import_fee_offset,
+        export_price_scale=export_price_scale,
+        export_price_offset=export_price_offset,
         terminal_linear_scale=terminal_linear_scale,
         terminal_soc_target=jnp.asarray(terminal_soc_target),
     )
@@ -411,10 +449,10 @@ def update_battery_qp_dynamic_vectors(
         * qp_static.terminal_soc_coeff
     )
     c = c.at[qp_static.idx_import].set(
-        price * qp_static.energy_price_scale
+        price * qp_static.import_price_scale + qp_static.import_fee_offset
     )
     c = c.at[qp_static.idx_export].set(
-        -price * qp_static.export_energy_price_scale
+        -(price * qp_static.export_price_scale + qp_static.export_price_offset)
     )
 
     current_energy_wh = current_soc * qp_static.capacity_wh

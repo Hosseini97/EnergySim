@@ -6,11 +6,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from scipy import sparse
+from scipy.optimize import milp, LinearConstraint, Bounds
+
 from energysim.sim.simulator import JAXSimulator
 from energysim.control.mpc_solver import JAX_MPC_Solver
 from energysim.core.data.dataset import SimulationDataset
 
 from energysim.utils import objectives
+from energysim.utils.objectives import EXPORT_PRICE_FRACTION
 
 from energysim.core.shared.data_structs import (
     BatteryConfig,
@@ -53,6 +57,15 @@ def build_simulator(
 def build_zero_action(n_rooms: int) -> SystemActions:
     return SystemActions(
         battery_power_w=jnp.array(0.0),
+        heat_pump_power_w=jnp.zeros((n_rooms,)),
+        ac_power_w=jnp.zeros((n_rooms,)),
+        storage_discharge_w=jnp.zeros((n_rooms,)),
+    )
+
+
+def build_battery_action(n_rooms: int, battery_power_w: float) -> SystemActions:
+    return SystemActions(
+        battery_power_w=jnp.asarray(battery_power_w, dtype=jnp.float32),
         heat_pump_power_w=jnp.zeros((n_rooms,)),
         ac_power_w=jnp.zeros((n_rooms,)),
         storage_discharge_w=jnp.zeros((n_rooms,)),
@@ -107,6 +120,127 @@ def step_cost_eur(
     return float(cost_eur), float(net_grid_w)
 
 
+def solve_oracle_plan(
+    load_w: np.ndarray,
+    pv_w: np.ndarray,
+    price: np.ndarray,
+    b_conf,
+    r_conf,
+    dt_seconds: float,
+) -> np.ndarray:
+    """Optimal battery power for a FULLY known horizon -- the upper bound.
+
+    This is what hard_mpc would do if its horizon covered the whole episode
+    instead of 96 steps. Because the battery problem is convex, one solve over
+    the full trace is the globally optimal schedule, so there is nothing left to
+    re-plan and it can be executed open loop.
+
+    It is solved here as a MILP rather than reusing JAX_MPC_Solver, for one
+    reason. The QP prices import and export as a convex piecewise function, which
+    is valid only while import costs more than export. Where the price is
+    NEGATIVE that ordering flips -- importing pays more than exporting costs --
+    the cost bends the wrong way, and a plain LP relaxation is unbounded: it
+    imports and exports simultaneously without limit. The binary y[t] below
+    forces import * export = 0, which is the exclusivity that max(net, 0) and
+    max(-net, 0) already impose inside the simulator.
+
+    Variables per step, all >= 0:  c charge W, d discharge W,
+                                   imp import W, exp export W, y binary
+
+        min   sum_t (imp[t]*price_imp[t] - exp[t]*price_exp[t]) * dt / 3.6e6
+        s.t.  imp[t] - exp[t] = load[t] - pv[t] + c[t] - d[t]
+              imp[t] <= M_imp[t] * y[t]
+              exp[t] <= M_exp[t] * (1 - y[t])
+              0 <= cumulative stored energy <= capacity_j
+              0 <= c[t], d[t] <= max_power_w
+
+    Efficiency follows SimpleBatteryModel: sqrt(round-trip) multiplied on charge
+    and divided on discharge.
+    """
+    n_steps = len(price)
+
+    one_way_eff = float(np.sqrt(b_conf.efficiency))
+    max_power_w = float(b_conf.max_power_w)
+    capacity_j = float(b_conf.capacity_j)
+    kwh_per_w = dt_seconds / 3.6e6
+
+    price_imp = (
+        price * (1.0 + r_conf.import_tax_rate)
+        + r_conf.import_grid_fee_eur_per_kwh
+    )
+
+    if r_conf.export_price_eur_per_kwh is None:
+        price_exp = EXPORT_PRICE_FRACTION * price
+    else:
+        price_exp = np.full_like(price, r_conf.export_price_eur_per_kwh)
+
+    # Column order: [c | d | imp | exp | y]
+    objective = np.concatenate([
+        np.zeros(n_steps),
+        np.zeros(n_steps),
+        price_imp * kwh_per_w,
+        -price_exp * kwh_per_w,
+        np.zeros(n_steps),
+    ])
+
+    eye = sparse.eye(n_steps, format="csr")
+    zero = sparse.csr_matrix((n_steps, n_steps))
+    lower = sparse.csr_matrix(np.tril(np.ones((n_steps, n_steps))))
+
+    big_m_imp = np.maximum(load_w - pv_w + max_power_w, 0.0) + 1.0
+    big_m_exp = np.maximum(pv_w - load_w + max_power_w, 0.0) + 1.0
+
+    constraints = [
+        LinearConstraint(
+            sparse.hstack([-eye, eye, eye, -eye, zero]).tocsr(),
+            load_w - pv_w,
+            load_w - pv_w,
+        ),
+        LinearConstraint(
+            sparse.hstack([zero, zero, eye, zero, sparse.diags(-big_m_imp)]).tocsr(),
+            -np.inf,
+            0.0,
+        ),
+        LinearConstraint(
+            sparse.hstack([zero, zero, zero, eye, sparse.diags(big_m_exp)]).tocsr(),
+            -np.inf,
+            big_m_exp,
+        ),
+        LinearConstraint(
+            sparse.hstack([
+                lower * (one_way_eff * dt_seconds),
+                lower * (-dt_seconds / one_way_eff),
+                zero, zero, zero,
+            ]).tocsr(),
+            0.0,
+            capacity_j,
+        ),
+    ]
+
+    lower_bounds = np.zeros(5 * n_steps)
+    upper_bounds = np.concatenate([
+        np.full(n_steps, max_power_w),
+        np.full(n_steps, max_power_w),
+        big_m_imp,
+        big_m_exp,
+        np.ones(n_steps),
+    ])
+    integrality = np.concatenate([np.zeros(4 * n_steps), np.ones(n_steps)])
+
+    result = milp(
+        c=objective,
+        constraints=constraints,
+        bounds=Bounds(lower_bounds, upper_bounds),
+        integrality=integrality,
+        options={"time_limit": 600, "mip_rel_gap": 1e-6},
+    )
+
+    if result.x is None:
+        raise RuntimeError(f"Oracle MILP did not solve: {result.message}")
+
+    return result.x[:n_steps] - result.x[n_steps:2 * n_steps]
+
+
 def make_controller(
     case_name: str,
     horizon: int,
@@ -130,7 +264,9 @@ def make_controller(
             phys_max=hard_phys_max,
         )
 
-    if case_name == "no_control":
+    if case_name in ("no_control", "oracle"):
+        # oracle needs no controller object -- its whole schedule is solved once,
+        # before the rollout, by solve_oracle_plan().
         return None
 
     raise ValueError(f"Unknown case_name: {case_name}")
@@ -161,6 +297,18 @@ def simulate_case(
     max_steps = all_exo.ambient_temp.shape[0] - horizon
     rollout_steps = max_steps if eval_steps is None else min(max_steps, int(eval_steps))
 
+    oracle_plan_w = None
+    if case_name == "oracle":
+        # One solve over the entire rollout, then executed open loop.
+        oracle_plan_w = solve_oracle_plan(
+            load_w=np.asarray(all_exo.base_load_w)[:rollout_steps],
+            pv_w=np.asarray(all_exo.solar_irradiance_w_m2)[:rollout_steps],
+            price=np.asarray(all_exo.price)[:rollout_steps],
+            b_conf=sim_template.battery.config,
+            r_conf=sim_template.configs[2],
+            dt_seconds=sim_template.dt_seconds,
+        )
+
     for idx in range(rollout_steps):
         exo_forecast = jax.tree.map(
             lambda arr: jax.lax.dynamic_slice_in_dim(arr, idx, horizon),
@@ -172,7 +320,9 @@ def simulate_case(
             all_exo,
         )
 
-        if controller is None:
+        if case_name == "oracle":
+            action = build_battery_action(n_rooms, float(oracle_plan_w[idx]))
+        elif controller is None:
             action = build_zero_action(n_rooms)
         else:
             action = controller.solve(
@@ -724,8 +874,17 @@ def run_comparison():
         eval_steps=eval_steps,
     )
 
+    # Upper bound: the same problem with the horizon opened to the whole episode.
+    oracle_df = simulate_case(
+        "oracle",
+        sim_template,
+        all_exo,
+        horizon,
+        eval_steps=eval_steps,
+    )
+
     all_df = pd.concat(
-        [no_control_df, hard_df],
+        [no_control_df, hard_df, oracle_df],
         ignore_index=True,
     )
 
@@ -737,6 +896,7 @@ def run_comparison():
     stats = {
         "no_control": summarize(no_control_df, dt),
         "hard_mpc": summarize(hard_df, dt),
+        "oracle": summarize(oracle_df, dt),
     }
 
     print("=== Comparison On Same Perfect-Forecast Trace ===")
@@ -746,10 +906,29 @@ def run_comparison():
     for key in keys:
         n = stats["no_control"][key]
         h = stats["hard_mpc"][key]
+        o = stats["oracle"][key]
 
         print(f"{key}:")
         print(f"  no_control   = {n:.6f}")
         print(f"  hard_mpc     = {h:.6f} (delta vs no_control = {h - n:+.6f})")
+        print(f"  oracle       = {o:.6f} (delta vs no_control = {o - n:+.6f})")
+
+    # How much of the attainable saving each controller captures. The oracle
+    # knows the whole week, so it defines 100%.
+    idle_cost = no_control_df["electricity_cost_eur"].sum()
+    mpc_saved = idle_cost - hard_df["electricity_cost_eur"].sum()
+    oracle_saved = idle_cost - oracle_df["electricity_cost_eur"].sum()
+
+    print("\n=== Share Of The Attainable Saving ===")
+    print(f"  oracle    saved {oracle_saved:+.4f} EUR  (100%, horizon = whole episode)")
+    if oracle_saved > 0:
+        print(f"  hard_mpc  saved {mpc_saved:+.4f} EUR  "
+              f"({100.0 * mpc_saved / oracle_saved:.0f}%, horizon = {horizon} steps)")
+
+    negative_share = float(np.mean(np.asarray(all_exo.price) < 0.0))
+    print(f"\n  negative-price steps in this trace: {100.0 * negative_share:.1f}%")
+    print("  (where they occur the convex QP form is an approximation -- "
+          "see solve_oracle_plan)")
 
     n_rooms = len(sim_template.thermal.config.room_air_indices)
 
