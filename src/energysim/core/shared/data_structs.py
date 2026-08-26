@@ -79,6 +79,23 @@ class RewardConfig(eqx.Module):
     # it is an instruction to ignore electricity prices.
     comfort_weight: float = eqx.field(static=True, default=0.0)
 
+    # Charge for being too HOT as well as too cold. Default True: comfort is
+    # symmetric, and a general-purpose reward should not care which direction you
+    # are uncomfortable in.
+    #
+    # Set False when the action space cannot cool. In EnergySim the heat pump is
+    # heating-only -- cooling is a separate AirConditionerModel -- so an agent given
+    # only the heat pump has no actuator for summer overheating. Charging it anyway
+    # is charging it for the weather: measured on the Heeten held-out split, an
+    # 18.2 degC week put 83% of that week's total cost into a penalty no action could
+    # change, swamping the control signal it was supposed to be learning from. A
+    # reward term the policy cannot act on is noise with a gradient.
+    #
+    # Overheating does not stop mattering when this is False -- it stops being
+    # BILLED. Report hot-side degree-hours alongside the result so the excursion
+    # stays visible.
+    comfort_penalize_overheating: bool = eqx.field(static=True, default=True)
+
     # --- Retail tariff ---
     # A household does not buy and sell at the same price. It pays the wholesale
     # price plus tax and grid fees to import, and receives a much lower feed-in

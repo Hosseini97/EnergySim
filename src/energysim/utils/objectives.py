@@ -237,9 +237,16 @@ def f_stage_cost(
     # Comfort is charged on the temperature the action PRODUCED, not the one it
     # started from, so the penalty is attributable to the action taken.
     room_temps = next_state.thermal.T_vector[jnp.array(t_conf.room_air_indices)]
-    excursion_c = jnp.maximum(
-        0.0, jnp.abs(room_temps - t_conf.setpoint) - t_conf.comfort_band
-    )
+    if r_conf.comfort_penalize_overheating:
+        excursion_c = jnp.maximum(
+            0.0, jnp.abs(room_temps - t_conf.setpoint) - t_conf.comfort_band
+        )
+    else:
+        # Cold side only -- for an action space that cannot cool. See
+        # RewardConfig.comfort_penalize_overheating.
+        excursion_c = jnp.maximum(
+            0.0, (t_conf.setpoint - t_conf.comfort_band) - room_temps
+        )
     hours = dt_seconds / 3600.0
     comfort_eur = r_conf.comfort_weight * jnp.sum(excursion_c ** 2) * hours
 
