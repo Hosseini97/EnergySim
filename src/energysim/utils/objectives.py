@@ -221,10 +221,22 @@ def f_stage_cost(
 
     # Import and export are priced separately -- see RewardConfig. The defaults
     # leave this identical to billing both directions at the wholesale price.
+    # VAT applies to the WHOLE bill -- energy and grid fees -- not to the energy alone,
+    # so the fee is added before the tax rather than after. That is how German household
+    # billing works, and it also matters numerically: wholesale reaches -0.05 EUR/kWh on
+    # ~2.7% of real steps, and taxing first turns that into -0.0595 before any fee is
+    # applied, so a 0.05 fee still leaves the import price negative. Adding first means
+    # any fee above the most negative wholesale price is enough.
+    #
+    # A negative import price is not a rounding detail: it means consumption pays, and a
+    # perfect-foresight optimizer will find it. The thermal oracle discovered it and used
+    # the building as a heat sink -- 163 kWh of heat pump against a thermostat's 44, and
+    # 5661 degree-hours of overheating, to earn 2.49 EUR in a week.
+    #
+    # Defaults are still 0.0 / 0.0, where this is identical to the previous ordering.
     import_price = (
-        exogenous.price * (1.0 + r_conf.import_tax_rate)
-        + r_conf.import_grid_fee_eur_per_kwh
-    )
+        exogenous.price + r_conf.import_grid_fee_eur_per_kwh
+    ) * (1.0 + r_conf.import_tax_rate)
     if r_conf.export_price_eur_per_kwh is None:
         export_price = EXPORT_PRICE_FRACTION * exogenous.price
     else:
@@ -417,8 +429,12 @@ def build_battery_qp_static_data(
     import_price_scale = jnp.asarray(
         (1.0 + r_conf.import_tax_rate) * energy_factor_kwh_per_w * price_weight
     )
+    # (price + fee) * (1 + tax) = price*(1+tax) + fee*(1+tax), so the fee offset carries
+    # the tax factor too. Must track f_stage_cost exactly or MPC optimizes a different
+    # objective than it is scored on.
     import_fee_offset = jnp.asarray(
-        r_conf.import_grid_fee_eur_per_kwh * energy_factor_kwh_per_w * price_weight
+        r_conf.import_grid_fee_eur_per_kwh * (1.0 + r_conf.import_tax_rate)
+        * energy_factor_kwh_per_w * price_weight
     )
     if r_conf.export_price_eur_per_kwh is None:
         export_price_scale = jnp.asarray(
