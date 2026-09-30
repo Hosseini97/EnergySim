@@ -260,7 +260,15 @@ def f_stage_cost(
             0.0, (t_conf.setpoint - t_conf.comfort_band) - room_temps
         )
     hours = dt_seconds / 3600.0
-    comfort_eur = r_conf.comfort_weight * jnp.sum(excursion_c ** 2) * hours
+    # excursion_c is already zero inside the band (the max(0, ...) above), so the
+    # linear term is a hinge: it contributes nothing until the band is left, then
+    # a constant marginal cost from the first instant outside it. See
+    # RewardConfig.comfort_linear_weight for why the pure quadratic term alone is
+    # too flat there to compete with a real heating cost.
+    comfort_eur = (
+        r_conf.comfort_linear_weight * jnp.sum(excursion_c) * hours
+        + r_conf.comfort_weight * jnp.sum(excursion_c ** 2) * hours
+    )
 
     # Both terms are scaled by price_weight together, so comfort_weight stays a
     # pure EUR/(degC^2.h) exchange rate and does not silently absorb the scaling.

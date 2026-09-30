@@ -79,6 +79,23 @@ class RewardConfig(eqx.Module):
     # it is an instruction to ignore electricity prices.
     comfort_weight: float = eqx.field(static=True, default=0.0)
 
+    # Price of thermal discomfort, in EUR per (degC . hour) outside the comfort band,
+    # charged LINEARLY in addition to comfort_weight's quadratic term:
+    # w_lin * excursion + w_quad * excursion^2. Defaults to 0.0, so comfort_weight
+    # alone reproduces the old dead-band-quadratic behaviour for every existing caller.
+    #
+    # A pure quadratic penalty has ZERO marginal cost at the band edge -- its
+    # derivative is 2 * comfort_weight * excursion, which is 0 at excursion = 0 -- so
+    # for any excursion shallower than comfort_weight's own break-even depth, an
+    # optimizer facing a real per-kWh heating cost finds it cheaper to stay cold than
+    # to heat. comfort_linear_weight is that missing marginal cost at the edge: set it
+    # above the EUR/degree-hour a unit of heating actually buys back (measured, not
+    # guessed -- see comfort_weight's derivation for this building) and the penalty is
+    # steep from the first fraction of a degree, not just once the excursion is
+    # already large. The quadratic term still does its job of discouraging deep,
+    # sustained excursions on top of that floor.
+    comfort_linear_weight: float = eqx.field(static=True, default=0.0)
+
     # Charge for being too HOT as well as too cold. Default True: comfort is
     # symmetric, and a general-purpose reward should not care which direction you
     # are uncomfortable in.
